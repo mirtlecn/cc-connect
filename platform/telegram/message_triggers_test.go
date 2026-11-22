@@ -82,6 +82,23 @@ func TestTelegramMessageTriggers_NativeIdentityAndGroupRouting(t *testing.T) {
 	if got == nil || got.Trigger != nil || got.Content != "/status" {
 		t.Fatalf("private slash command was captured by a trigger: %#v", got)
 	}
+
+	p.SetMessageTriggerScope(nil, true, false)
+	msg = telegramTriggerTestMessage()
+	msg.Chat.ID = -101
+	got = nil
+	p.handleMessage(context.Background(), msg)
+	if got == nil || got.Trigger == nil || !got.Trigger.RuleOnly || got.Trigger.PrivateChat || got.Trigger.ChatID != "-101" ||
+		got.SessionKey != "telegram:-101:55:7" {
+		t.Fatalf("all-groups scope did not admit group outside the explicit IDs: %#v", got)
+	}
+
+	p.SetMessageTriggerGroups([]string{"-100"})
+	got = nil
+	p.handleMessage(context.Background(), msg)
+	if got != nil {
+		t.Fatalf("explicit groups still admitted a message through the previous wildcard scope: %#v", got)
+	}
 }
 
 func TestTelegramMessageTriggers_BodyBeforeLinkAndReplyEnrichment(t *testing.T) {
@@ -113,11 +130,17 @@ func TestTelegramMessageTriggers_ScopedAndFailClosed(t *testing.T) {
 		alter func(*Platform, *models.Message)
 	}{
 		{"unselected group", func(_ *Platform, msg *models.Message) { msg.Chat.ID = -101 }},
-		{"unallowed sender", func(p *Platform, _ *models.Message) { p.allowFrom = "8" }},
+		{"all groups with unallowed sender", func(p *Platform, msg *models.Message) {
+			p.SetMessageTriggerScope(nil, true, false)
+			p.allowFrom = "8"
+			msg.Chat.ID = -101
+		}},
 		{"bot sender", func(_ *Platform, msg *models.Message) { msg.From.IsBot = true }},
 		{"self unknown", func(p *Platform, _ *models.Message) { p.selfUser = nil }},
 		{"malformed mention", func(_ *Platform, msg *models.Message) { msg.Entities[0].Offset = 100 }},
-		{"foreign bot command", func(_ *Platform, msg *models.Message) {
+		{"all groups with foreign bot command", func(p *Platform, msg *models.Message) {
+			p.SetMessageTriggerScope(nil, true, false)
+			msg.Chat.ID = -101
 			msg.Text = "/help@otherbot"
 			msg.Entities = []models.MessageEntity{{Type: models.MessageEntityTypeBotCommand, Length: len(msg.Text)}}
 		}},

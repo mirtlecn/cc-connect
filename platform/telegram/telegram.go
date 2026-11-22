@@ -133,6 +133,7 @@ type Platform struct {
 	bot                        telegramBot
 	selfUser                   *models.User
 	messageTriggerGroups       []string // guarded by mu
+	messageTriggerAllGroups    bool     // guarded by mu
 	messageTriggerPrivateChats bool     // guarded by mu
 	handler                    core.MessageHandler
 	lifecycleHandler           core.PlatformLifecycleHandler

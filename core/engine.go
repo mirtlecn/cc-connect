@@ -3172,13 +3172,21 @@ func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *Messag
 	} else if e.multiWorkspace {
 		channelID := effectiveChannelID(msg)
 		channelKey := e.effectiveWorkspaceChannelKey(msg)
+		var canUseProjectWorkDir bool
+		if trigger != nil && trigger.Action == "shell" {
+			binding, _ := e.workspaceBindings.LookupEffective("project:"+e.name, workspaceChannelKey(p.Name(), channelID))
+			canUseProjectWorkDir = binding == nil
+		}
 		workspace, channelName, err := e.resolveWorkspace(p, channelID)
 		if err != nil {
 			slog.Error("workspace resolution failed", "err", err)
 			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 			return
 		}
-		if workspace == "" {
+		switch {
+		case workspace == "" && canUseProjectWorkDir:
+			// A shell action can use the project's working directory without a chat binding.
+		case workspace == "":
 			// No workspace — handle init flow (unless it's a /workspace command)
 			if !strings.HasPrefix(content, "/workspace") && !strings.HasPrefix(content, "/ws ") {
 				if e.handleWorkspaceInitFlow(p, msg, channelName) {
@@ -3195,7 +3203,7 @@ func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *Messag
 			if !strings.HasPrefix(content, "/") {
 				return
 			}
-		} else {
+		default:
 			// Touch for idle tracking
 			if ws := e.workspacePool.Get(workspace); ws != nil {
 				ws.Touch()

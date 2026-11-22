@@ -28,6 +28,7 @@ func (p *Platform) SetMessageTriggerGroups(groups []string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.messageTriggerGroups = slices.Clone(groups)
+	p.messageTriggerAllGroups = false
 }
 
 func (p *Platform) SetMessageTriggerPrivateChats(enabled bool) {
@@ -36,12 +37,20 @@ func (p *Platform) SetMessageTriggerPrivateChats(enabled bool) {
 	p.messageTriggerPrivateChats = enabled
 }
 
+func (p *Platform) SetMessageTriggerScope(groups []string, allGroups, privateChats bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.messageTriggerGroups = slices.Clone(groups)
+	p.messageTriggerAllGroups = allGroups
+	p.messageTriggerPrivateChats = privateChats
+}
+
 func (p *Platform) watchesTriggerChat(chatType, chatID string) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	switch chatType {
 	case "group":
-		return slices.Contains(p.messageTriggerGroups, chatID)
+		return chatID != "" && (p.messageTriggerAllGroups || slices.Contains(p.messageTriggerGroups, chatID))
 	case "p2p":
 		return p.messageTriggerPrivateChats
 	default:

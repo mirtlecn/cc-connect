@@ -976,11 +976,16 @@ The rule's platform must already be configured for the project. For group-chat r
 
 A rule needs at least one condition group with at least one condition in each. `group_match` combines the groups and defaults to `or`. Each group's `match` combines its conditions and defaults to `and`. At either level, `and` requires every item to match and `or` requires any one item.
 
-- `group`, `sender`, and `mentioned` match the chat, sender, or a mentioned user by ID. Enter the IDs as `values`. Any ID in the list matches. For senders and mentioned users, Telegram also accepts `@username` where the event supplies it.
+- `chat_scope` restricts a condition group to a conversation scope. In the Web editor, choose **Group chats only**, **Private chats only**, or **Group and private chats**. In TOML, set `value` to `group`, `private`, or `all` respectively. For `group` or `all`, `values` can list specific group IDs. Leave it empty to include all accessible groups. The list applies only to group chats. Omit `values` for `private`.
+- `sender` and `mentioned` match the sender or a mentioned user by ID. Enter the IDs as `values`. Any ID in the list matches. Telegram also accepts `@username` where the event supplies it.
 - `regex` matches the original message text. Enter a Go regular expression (RE2) as `value`. Matching is case-sensitive by default. A pattern such as `(?i:incident|outage)` ignores case.
 - `time_range` matches a daily time range in the local time zone of the machine running cc-connect. Enter `start` and `end` in 24-hour `HH:MM` format. The start is included, the end is excluded, and the two times must differ. An end earlier than the start crosses midnight. In the Web editor, add **Daily time range** to a condition group. It uses the same `and` or `or` as the other conditions in the group.
 
-A rule with `group` conditions applies only to the group chats listed in those conditions. A rule without any `group` condition applies only to private chats. The platform's existing access filters still apply. Each `group` condition also participates in its group's logic. A rule with just a `group` condition matches ordinary messages from those chats. Use `and` when the message must come from a specified chat and match a regex.
+Each condition group accepts at most one `chat_scope`. The message must be within that scope before the group's `and` or `or` matches its other conditions. A scope-only condition group matches every message within its scope.
+
+The rule's overall coverage combines all explicit scopes and legacy `group` IDs. A condition group without its own scope is evaluated within that overall coverage. Existing `group` conditions continue to participate in their group's `and` or `or` logic. A rule with neither `chat_scope` nor legacy `group` conditions covers both group and private chats. The platform's existing access filters still apply. To keep an existing unscoped rule private-only, add a **Private chats only** scope.
+
+In multi-workspace mode, Agent actions use the conversation's workspace and require it to be set up. Shell actions use the project working directory when the conversation has no workspace binding.
 
 Existing flat rules still load. Group and identity requirements become grouped conditions, and keywords become case-insensitive literal regular expressions. Legacy confirmation settings migrate to manual mode. Legacy intent conditions migrate to intent mode, with manual mode taking precedence when both were used. Saving writes the new rule structure.
 
@@ -1006,7 +1011,8 @@ cc_user_ids = ["ou_example_recipient"]
 match = "and"
 
 [[projects.message_triggers.groups.conditions]]
-type = "group"
+type = "chat_scope"
+value = "group"
 values = ["oc_example_group"]
 
 [[projects.message_triggers.groups.conditions]]
@@ -1017,7 +1023,8 @@ value = '(?i:incident|outage)'
 match = "and"
 
 [[projects.message_triggers.groups.conditions]]
-type = "group"
+type = "chat_scope"
+value = "group"
 values = ["oc_example_escalations"]
 
 [[projects.message_triggers.groups.conditions]]
@@ -1040,7 +1047,8 @@ command = "echo trigger-ok"
 match = "and"
 
 [[projects.message_triggers.groups.conditions]]
-type = "group"
+type = "chat_scope"
+value = "group"
 values = ["-1001234567890"]
 
 [[projects.message_triggers.groups.conditions]]

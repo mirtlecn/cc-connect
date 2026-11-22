@@ -11,9 +11,9 @@ func (r MessageTriggerRule) watches(platform string, event *MessageTriggerEvent)
 		return false
 	}
 	if event.PrivateChat {
-		return len(r.groupsInScope) == 0
+		return r.privateChatsInScope
 	}
-	return slices.Contains(r.groupsInScope, event.ChatID)
+	return r.allGroupsInScope || slices.Contains(r.groupsInScope, event.ChatID)
 }
 
 func (r MessageTriggerRule) matchesGroups(event *MessageTriggerEvent, at time.Time) bool {
@@ -23,7 +23,18 @@ func (r MessageTriggerRule) matchesGroups(event *MessageTriggerEvent, at time.Ti
 }
 
 func (g MessageTriggerGroup) matches(event *MessageTriggerEvent, at time.Time) bool {
+	if g.chatScope != nil {
+		if !g.chatScope.matches(event, at) {
+			return false
+		}
+		if len(g.Conditions) == 1 {
+			return true
+		}
+	}
 	return matchTriggerItems(g.Match, g.Conditions, func(condition MessageTriggerCondition) bool {
+		if condition.Type == "chat_scope" {
+			return g.Match == "and"
+		}
 		return condition.matches(event, at)
 	})
 }
@@ -51,8 +62,13 @@ func (r MessageTriggerRule) captureGroups(event *MessageTriggerEvent, at time.Ti
 
 func (c MessageTriggerCondition) matches(event *MessageTriggerEvent, at time.Time) bool {
 	switch c.Type {
+	case "chat_scope":
+		if event.PrivateChat {
+			return c.Value != "group"
+		}
+		return c.Value != "private" && (len(c.Values) == 0 || slices.Contains(c.Values, event.ChatID))
 	case "group":
-		return slices.Contains(c.Values, event.ChatID)
+		return !event.PrivateChat && slices.Contains(c.Values, event.ChatID)
 	case "sender":
 		return matchesTriggerIDs(c.Values, event.SenderIDs)
 	case "mentioned":

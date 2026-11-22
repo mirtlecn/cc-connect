@@ -1102,11 +1102,10 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # 匹配群聊时，飞书/Lark 需发布 im:message.group_msg 权限，Telegram 机器人需能接收普通群消息。
 # Rules match ordinary group and private messages from bottom to top, including direct bot mentions.
 # 群聊和私聊的普通消息按规则从下往上匹配，包括直接 @ 机器人的消息。未命中的私聊或直接 @ 消息进入普通对话。
-# Each rule needs a non-empty condition group. With group conditions, it applies only to the listed groups.
-# 每条规则至少配置一个非空条件组。含 group 条件的规则只适用于这些条件列出的群。
-# For a private-chat rule, omit all group conditions. / 仅匹配私聊时，省略所有 group 条件。
-# A group condition also participates in its group's AND/OR logic.
-# group 条件也参与组内的 AND/OR 判断。
+# Each condition group can have one chat_scope. It applies before the group's AND/OR conditions.
+# 每个条件组最多一个 chat_scope，先判断会话范围，再按组内的 AND/OR 判断其余条件。
+# Without chat_scope or legacy group conditions, the rule covers group and private chats.
+# 两类条件都省略时，规则默认覆盖群聊和私聊。旧 group 条件仍参与组内 AND/OR。
 # [[projects.message_triggers]]
 # name = "Triage an incident"
 # enabled = false
@@ -1123,8 +1122,9 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # match = "and"                    # and | or, default and within a group / 组内默认 and
 #
 # [[projects.message_triggers.groups.conditions]]
-# type = "group"                   # group | sender | mentioned | regex | time_range
-# values = ["oc_group_example"]    # group, sender, mentioned use any matching ID / 匹配任一 ID
+# type = "chat_scope"
+# value = "group"                  # group | private | all
+# values = ["oc_group_example"]    # Optional group IDs for group/all. / group 或 all 可选群 ID，私聊省略。
 #
 # [[projects.message_triggers.groups.conditions]]
 # type = "regex"
@@ -1139,7 +1139,8 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # match = "and"
 #
 # [[projects.message_triggers.groups.conditions]]
-# type = "group"
+# type = "chat_scope"
+# value = "group"
 # values = ["oc_escalations_example"]
 #
 # [[projects.message_triggers.groups.conditions]]

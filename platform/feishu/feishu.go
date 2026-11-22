@@ -162,6 +162,7 @@ type Platform struct {
 	skipWhenMentionOthers      bool
 	groupReplyAllChats         map[string]struct{}
 	messageTriggerGroups       []string                                                                        // guarded by mu
+	messageTriggerAllGroups    bool                                                                            // guarded by mu
 	messageTriggerPrivateChats bool                                                                            // guarded by mu
 	triggerConfirmationHandler func(id, chatID, userID string, approved bool) (feedback string, resolved bool) // guarded by mu
 	triggerConfirmationRoute   string                                                                          // guarded by mu

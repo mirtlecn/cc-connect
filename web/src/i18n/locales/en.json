@@ -110,7 +110,14 @@
     "timeRangeHint": "Uses the server’s local time. The start is included and the end is excluded. The range can cross midnight.",
     "timeRangeSame": "Start and end times must differ.",
     "conditions": "Match conditions",
-    "conditionsHint": "Add at least one condition group with at least one condition in each. A rule with Group ID conditions applies only to the listed group chats. Omit Group ID for a private-chat rule.",
+    "conditionsHint": "Each group needs a condition and can have one chat scope. The scope applies before the other conditions are combined with AND or OR. A rule with no scope or legacy Group ID conditions covers group and private chats.",
+    "chatScope": "Chat scope",
+    "chatScopes": {
+      "group": "Group chats only",
+      "private": "Private chats only",
+      "all": "Group and private chats"
+    },
+    "chatScopeGroupsHint": "Optional, one group ID per line. Leave blank to include all accessible groups. This list applies only to group chats.",
     "regex": "Message body regex",
     "regexHint": "The server validates Go RE2 syntax. Matching is case-sensitive by default. Add (?i) to ignore case.",
     "triggerMode": "Trigger mode",

@@ -38,12 +38,15 @@ type MessageTriggerRule struct {
 	Match        string   `json:"-" toml:"match,omitempty"`
 	Confirm      bool     `json:"-" toml:"confirm,omitempty"`
 
-	groupsInScope []string
+	groupsInScope       []string
+	allGroupsInScope    bool
+	privateChatsInScope bool
 }
 
 type MessageTriggerGroup struct {
 	Match      string                    `json:"match" toml:"match"`
 	Conditions []MessageTriggerCondition `json:"conditions" toml:"conditions"`
+	chatScope  *MessageTriggerCondition
 }
 
 type MessageTriggerCondition struct {
@@ -175,16 +178,24 @@ func normalizeMessageTriggerRule(rule MessageTriggerRule) (MessageTriggerRule, e
 	}
 	groups := make([]MessageTriggerGroup, 0, len(rule.Groups))
 	var groupIDs []string
+	rule.allGroupsInScope, rule.privateChatsInScope = false, false
 	for i, input := range rule.Groups {
 		group, chats, err := normalizeMessageTriggerGroup(input)
 		if err != nil {
 			return rule, fmt.Errorf("group %d: %w", i+1, err)
 		}
 		groupIDs = append(groupIDs, chats...)
+		if scope := group.chatScope; scope != nil {
+			rule.privateChatsInScope = rule.privateChatsInScope || scope.Value != "group"
+			rule.allGroupsInScope = rule.allGroupsInScope || (scope.Value != "private" && len(scope.Values) == 0)
+		}
 		groups = append(groups, group)
 	}
 	rule.Groups = groups
 	rule.groupsInScope = cleanTriggerList(groupIDs)
+	if len(groups) > 0 && len(rule.groupsInScope) == 0 && !rule.allGroupsInScope && !rule.privateChatsInScope {
+		rule.allGroupsInScope, rule.privateChatsInScope = true, true
+	}
 	return rule, nil
 }
 
@@ -273,6 +284,12 @@ func normalizeMessageTriggerGroup(input MessageTriggerGroup) (MessageTriggerGrou
 		}
 		if condition.Type == "group" {
 			groupIDs = append(groupIDs, condition.Values...)
+		} else if condition.Type == "chat_scope" {
+			if group.chatScope != nil {
+				return group, nil, fmt.Errorf("only one chat_scope condition is allowed per group")
+			}
+			group.chatScope = &condition
+			groupIDs = append(groupIDs, condition.Values...)
 		}
 		group.Conditions = append(group.Conditions, condition)
 	}
@@ -284,6 +301,17 @@ func (c *MessageTriggerCondition) validate() error {
 		return fmt.Errorf("start and end require a time_range condition")
 	}
 	switch c.Type {
+	case "chat_scope":
+		c.Value = strings.ToLower(strings.TrimSpace(c.Value))
+		switch c.Value {
+		case "group", "all":
+		case "private":
+			if len(c.Values) > 0 {
+				return fmt.Errorf("private chat_scope does not accept group IDs")
+			}
+		default:
+			return fmt.Errorf("chat_scope must be group, private, or all")
+		}
 	case "group", "sender", "mentioned":
 		if len(c.Values) == 0 || c.Value != "" {
 			return fmt.Errorf("%s requires a values list of platform IDs", c.Type)

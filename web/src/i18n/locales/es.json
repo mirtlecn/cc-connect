@@ -110,7 +110,14 @@
     "timeRangeHint": "Se usa la hora local del servidor. Se incluye el inicio y se excluye el fin. La franja puede cruzar la medianoche.",
     "timeRangeSame": "Las horas de inicio y de fin deben ser distintas.",
     "conditions": "Condiciones de coincidencia",
-    "conditionsHint": "Añade al menos un grupo de condiciones con una condición como mínimo en cada uno. Los ID de grupo limitan la regla a los grupos indicados. Omite los ID de grupo para aplicarla a chats privados.",
+    "conditionsHint": "Cada grupo necesita una condición y admite un único ámbito de chat. El ámbito se comprueba antes de combinar las demás condiciones con AND u OR. Una regla sin ámbito ni condiciones antiguas de ID de grupo abarca grupos y chats privados.",
+    "chatScope": "Ámbito de chat",
+    "chatScopes": {
+      "group": "Solo grupos",
+      "private": "Solo chats privados",
+      "all": "Grupos y chats privados"
+    },
+    "chatScopeGroupsHint": "Opcional, un ID de grupo por línea. Deja el campo vacío para incluir todos los grupos accesibles. Esta lista solo se aplica a grupos.",
     "regex": "Expresión regular del cuerpo del mensaje",
     "regexHint": "El servidor valida la sintaxis Go RE2. Distingue mayúsculas y minúsculas por defecto. Añade (?i) para ignorar la diferencia.",
     "triggerMode": "Modo de activación",

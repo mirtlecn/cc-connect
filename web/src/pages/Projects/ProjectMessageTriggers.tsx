@@ -6,7 +6,7 @@ import { ApiError } from '@/api/client';
 import { getMessageTriggers, saveMessageTriggers, type MessageTriggerRule, type MessageTriggerSettings } from '@/api/messageTriggers';
 import type { ProjectDetail } from '@/api/projects';
 import MessageTriggerEditor, { isTriggerPlatform, triggerModeLabels } from './MessageTriggerEditor';
-import { conditionLabels } from './MessageTriggerConditionGroups';
+import { chatScopeLabels, conditionLabels } from './MessageTriggerConditionGroups';
 
 export default function ProjectMessageTriggers({ project }: { project: ProjectDetail }) {
   const { t } = useTranslation();
@@ -120,12 +120,18 @@ export default function ProjectMessageTriggers({ project }: { project: ProjectDe
         <ul className="divide-y divide-gray-200 dark:divide-white/10" aria-busy={saving}>
           {rules.map((rule, index) => {
             const toggle = t(rule.enabled ? 'messageTriggers.disable' : 'messageTriggers.enable');
+            const defaultScope = !rule.groups?.some(group => group.conditions.some(condition => condition.type === 'chat_scope' || condition.type === 'group'));
             const expression = rule.groups?.map(group => {
-              const labels = group.conditions.map(condition => {
+              const scope = group.conditions.find(condition => condition.type === 'chat_scope');
+              const labels = group.conditions.filter(condition => condition.type !== 'chat_scope').map(condition => {
                 const label = t(conditionLabels[condition.type]);
                 return condition.type === 'time_range' ? `${label} ${condition.start}–${condition.end}` : label;
               });
-              return `(${labels.join(group.match === 'or' ? ' OR ' : ' AND ')})`;
+              const criteria = labels.join(group.match === 'or' ? ' OR ' : ' AND ');
+              if (!scope) return `(${criteria})`;
+              const scopeLabel = t(chatScopeLabels[scope.value]);
+              const gate = scope.values?.length ? `${scopeLabel} [${t('messageTriggers.groups')} ${scope.values.join(', ')}]` : scopeLabel;
+              return criteria ? `(${gate} AND (${criteria}))` : `(${gate})`;
             }).join(rule.group_match === 'and' ? ' AND ' : ' OR ');
             return (
               <li key={`${rule.name}-${index}`} className="flex flex-wrap items-center justify-between gap-3 py-3">
@@ -134,6 +140,7 @@ export default function ProjectMessageTriggers({ project }: { project: ProjectDe
                   <div className="flex flex-wrap gap-1.5">
                     <Badge>{isTriggerPlatform(rule.platform) ? t(`messageTriggers.platforms.${rule.platform}`) : rule.platform}</Badge>
                     <Badge>{t(`messageTriggers.${rule.action}`)}</Badge>
+                    {defaultScope && <Badge variant="outline">{t(chatScopeLabels.all)}</Badge>}
                     <Badge variant="outline">{t(triggerModeLabels[rule.trigger_mode ?? 'direct'])}</Badge>
                     {rule.cc_enabled && <Badge variant="outline">{t('messageTriggers.ccCount', { total: rule.cc_user_ids?.length ?? 0 })}</Badge>}
                     <Badge variant={rule.enabled ? 'success' : 'default'}>{t(rule.enabled ? 'messageTriggers.enabled' : 'messageTriggers.disabled')}</Badge>

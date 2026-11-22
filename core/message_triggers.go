@@ -16,8 +16,8 @@ type MessageTriggerPlatform interface {
 	TriggerReplyContext(msg *Message) (any, error)
 }
 
-type messageTriggerPrivateChatPlatform interface {
-	SetMessageTriggerPrivateChats(enabled bool)
+type messageTriggerScopePlatform interface {
+	SetMessageTriggerScope(groups []string, allGroups, privateChats bool)
 }
 
 type messageTriggerCCPlatform interface {
@@ -150,16 +150,19 @@ func (e *Engine) applyMessageTriggers(rules []MessageTriggerRule, model MessageT
 	for _, platform := range e.platforms {
 		if triggers, ok := platform.(MessageTriggerPlatform); ok {
 			var groups []string
-			privateChats := false
+			allGroups, privateChats := false, false
 			for _, rule := range normalized {
 				if rule.Enabled && rule.Platform == platform.Name() {
 					groups = append(groups, rule.groupsInScope...)
-					privateChats = privateChats || (len(rule.Groups) > 0 && len(rule.groupsInScope) == 0)
+					allGroups = allGroups || rule.allGroupsInScope
+					privateChats = privateChats || rule.privateChatsInScope
 				}
 			}
-			triggers.SetMessageTriggerGroups(cleanTriggerList(groups))
-			if private, ok := platform.(messageTriggerPrivateChatPlatform); ok {
-				private.SetMessageTriggerPrivateChats(privateChats)
+			groups = cleanTriggerList(groups)
+			if scope, ok := platform.(messageTriggerScopePlatform); ok {
+				scope.SetMessageTriggerScope(groups, allGroups, privateChats)
+			} else {
+				triggers.SetMessageTriggerGroups(groups)
 			}
 		}
 	}

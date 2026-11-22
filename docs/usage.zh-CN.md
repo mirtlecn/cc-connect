@@ -887,11 +887,16 @@ Claude Code 会自动创建定时任务。对依赖记忆文件的其他 Agent�
 
 每条规则至少配置一个条件组，每组至少一条条件。组间用 `group_match`，默认 `or`。组内用 `match`，默认 `and`。在任一级，`and` 都要求全部满足，`or` 都只要求一项满足。
 
-- `group`、`sender`、`mentioned` 分别匹配群、发件人和被 @ 的用户。用 `values` 填写 ID，同一条件内匹配任一 ID 即可。Telegram 的发件人和被 @ 用户条件也支持事件中带有的 `@用户名`。
+- `chat_scope` 限制整个条件组的会话范围。在 Web 编辑器中可选 **仅群聊**、**仅私聊** 或 **群聊和私聊**。在 TOML 中将 `value` 分别设为 `group`、`private` 或 `all`。`group` 和 `all` 可以用 `values` 列出指定群的 ID，留空时覆盖所有可访问的群。此列表只限制群聊。`private` 省略 `values`。
+- `sender` 和 `mentioned` 分别匹配发件人和被 @ 的用户。用 `values` 填写 ID，同一条件内匹配任一 ID 即可。Telegram 也支持事件中带有的 `@用户名`。
 - `regex` 用 `value` 填写 Go 正则表达式（RE2），匹配原消息正文。默认区分大小写，可用 `(?i:incident|outage)` 忽略大小写。
 - `time_range` 按运行 cc-connect 的机器的本地时区匹配每天的时段。`start` 和 `end` 都用 24 小时制 `HH:MM`。包含开始时刻，不包含结束时刻，起止时间必须不同。结束时间早于开始时间时，时段跨午夜。可在 Web 编辑器的条件组里添加 **每天时段**，与组内其他条件一起按 `and` 或 `or` 判断。
 
-含 `group` 条件的规则只适用于这些条件列出的群。省略所有 `group` 条件时，规则只适用于私聊。渠道原有的访问限制仍然生效。`group` 条件也参与组内判断。只配置 `group` 时，列出的群内普通消息都符合条件。组内同时配置群和正则时，使用 `and` 要求两项都满足。
+每个条件组最多配置一个 `chat_scope`。消息需先满足会话范围，再按组内的 `and` 或 `or` 判断其他条件。只有会话范围的条件组会匹配该范围内的所有消息。
+
+规则的整体接收范围合并了显式范围和旧 `group` 条件列出的群 ID。未单独配置范围的条件组在此整体范围内判断。旧 `group` 条件仍参与组内的 `and` 或 `or`。两类条件都省略时，规则默认覆盖群聊和私聊。渠道原有的访问限制仍然生效。要让已有的无范围规则继续只匹配私聊，请添加 **仅私聊** 的会话范围。
+
+多工作区模式下，Agent 动作需要先设置会话工作区。会话没有工作区绑定时，Shell 动作使用项目的工作目录。
 
 历史平铺规则仍可读取。原有群与身份限制迁移至条件组，旧关键词转换为忽略大小写的字面正则。旧确认设置迁移为人工确认，旧意图条件迁移为意图判断。两者同时存在时优先保留人工确认。保存时写入新的规则结构。
 
@@ -917,7 +922,8 @@ cc_user_ids = ["ou_example_recipient"]
 match = "and"
 
 [[projects.message_triggers.groups.conditions]]
-type = "group"
+type = "chat_scope"
+value = "group"
 values = ["oc_example_group"]
 
 [[projects.message_triggers.groups.conditions]]
@@ -928,7 +934,8 @@ value = '故障|异常'
 match = "and"
 
 [[projects.message_triggers.groups.conditions]]
-type = "group"
+type = "chat_scope"
+value = "group"
 values = ["oc_example_escalations"]
 
 [[projects.message_triggers.groups.conditions]]
@@ -951,7 +958,8 @@ command = "echo trigger-ok"
 match = "and"
 
 [[projects.message_triggers.groups.conditions]]
-type = "group"
+type = "chat_scope"
+value = "group"
 values = ["-1001234567890"]
 
 [[projects.message_triggers.groups.conditions]]

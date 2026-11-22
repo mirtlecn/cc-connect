@@ -29,6 +29,7 @@ func (p *Platform) SetMessageTriggerGroups(groups []string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.messageTriggerGroups = slices.Clone(groups)
+	p.messageTriggerAllGroups = false
 }
 
 func (p *Platform) SetMessageTriggerPrivateChats(enabled bool) {
@@ -37,17 +38,28 @@ func (p *Platform) SetMessageTriggerPrivateChats(enabled bool) {
 	p.messageTriggerPrivateChats = enabled
 }
 
+func (p *Platform) SetMessageTriggerScope(groups []string, allGroups, privateChats bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.messageTriggerGroups = slices.Clone(groups)
+	p.messageTriggerAllGroups = allGroups
+	p.messageTriggerPrivateChats = privateChats
+}
+
 func (p *Platform) triggerEvent(msg *models.Message) *core.MessageTriggerEvent {
-	if msg.From.ID <= 0 || msg.From.IsBot || isCommand(msg) ||
+	if msg.Chat.ID == 0 || msg.From.ID <= 0 || msg.From.IsBot || isCommand(msg) ||
 		(msg.Text == "" && (msg.Caption == "" || (len(msg.Photo) == 0 && msg.Document == nil))) {
 		return nil
 	}
 	chatID := strconv.FormatInt(msg.Chat.ID, 10)
 	privateChat := msg.Chat.Type == models.ChatTypePrivate
 	p.mu.RLock()
-	selected := p.messageTriggerPrivateChats
-	if !privateChat {
-		selected = slices.Contains(p.messageTriggerGroups, chatID)
+	var selected bool
+	switch msg.Chat.Type {
+	case models.ChatTypePrivate:
+		selected = p.messageTriggerPrivateChats
+	case models.ChatTypeGroup, models.ChatTypeSupergroup:
+		selected = p.messageTriggerAllGroups || slices.Contains(p.messageTriggerGroups, chatID)
 	}
 	self := p.selfUser
 	p.mu.RUnlock()

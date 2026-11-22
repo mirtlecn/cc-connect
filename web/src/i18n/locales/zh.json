@@ -110,7 +110,14 @@
     "timeRangeHint": "使用服务所在机器的本地时间，包含开始时间，不包含结束时间，可跨午夜。",
     "timeRangeSame": "开始和结束时间必须不同。",
     "conditions": "匹配条件",
-    "conditionsHint": "至少添加一个条件组，每组至少一条条件。含群 ID 条件的规则只适用于列出的群。省略群 ID 条件时，规则只适用于私聊。",
+    "conditionsHint": "每组至少一项条件，最多一项会话范围。先判断范围，再按组内 AND 或 OR 判断其余条件。规则未配置范围和旧版群 ID 条件时，默认适用于群聊和私聊。",
+    "chatScope": "会话范围",
+    "chatScopes": {
+      "group": "仅群聊",
+      "private": "仅私聊",
+      "all": "群聊和私聊"
+    },
+    "chatScopeGroupsHint": "选填，每行一个群 ID。留空时覆盖所有可访问的群。此列表仅限制群聊。",
     "regex": "消息体正则",
     "regexHint": "使用 Go RE2 语法，由服务端校验。默认区分大小写，添加 (?i) 可忽略大小写。",
     "triggerMode": "触发方式",

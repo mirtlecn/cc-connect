@@ -2,9 +2,11 @@ import api from './client';
 
 export type MessageTriggerMatch = 'and' | 'or';
 export type MessageTriggerMode = 'direct' | 'manual' | 'intent';
+export type MessageTriggerChatScope = 'group' | 'private' | 'all';
 
 export type MessageTriggerCondition =
   | { type: 'group' | 'sender' | 'mentioned'; values: string[] }
+  | { type: 'chat_scope'; value: MessageTriggerChatScope; values?: string[] }
   | { type: 'regex'; value: string }
   | { type: 'time_range'; start: string; end: string };
 

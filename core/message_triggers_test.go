@@ -159,6 +159,7 @@ func TestMessageTriggerIsolatesPrivateChatsAndGroups(t *testing.T) {
 	rules := []MessageTriggerRule{{
 		Name: "private task", Enabled: true, Platform: p.Name(), TriggerMode: "direct", Action: "agent",
 		Groups: []MessageTriggerGroup{{Match: "and", Conditions: []MessageTriggerCondition{
+			{Type: "chat_scope", Value: "private"},
 			{Type: "regex", Value: "^run task$"},
 		}}},
 		Prompt: "private rule",
@@ -222,6 +223,50 @@ func TestMessageTriggerIsolatesPrivateChatsAndGroups(t *testing.T) {
 	}
 }
 
+func TestMessageTriggerChatScopes(t *testing.T) {
+	at := time.Now()
+	for _, tc := range []struct {
+		name         string
+		scope        *MessageTriggerCondition
+		private      bool
+		listedGroup  bool
+		anotherGroup bool
+	}{
+		{name: "implicit all", private: true, listedGroup: true, anotherGroup: true},
+		{name: "all chats", scope: &MessageTriggerCondition{Type: "chat_scope", Value: "all"}, private: true, listedGroup: true, anotherGroup: true},
+		{name: "all with group IDs", scope: &MessageTriggerCondition{Type: "chat_scope", Value: "all", Values: []string{"listed"}}, private: true, listedGroup: true},
+		{name: "private chats", scope: &MessageTriggerCondition{Type: "chat_scope", Value: "private"}, private: true},
+		{name: "all groups", scope: &MessageTriggerCondition{Type: "chat_scope", Value: "group"}, listedGroup: true, anotherGroup: true},
+		{name: "listed groups", scope: &MessageTriggerCondition{Type: "chat_scope", Value: "group", Values: []string{"listed"}}, listedGroup: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conditions := []MessageTriggerCondition{{Type: "regex", Value: "^record:"}}
+			if tc.scope != nil {
+				conditions = append(conditions, *tc.scope)
+			}
+			rule, err := normalizeMessageTriggerRule(MessageTriggerRule{Enabled: true, Platform: "test",
+				Groups: []MessageTriggerGroup{{Match: "or", Conditions: conditions}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, chat := range []struct {
+				event MessageTriggerEvent
+				want  bool
+			}{
+				{MessageTriggerEvent{ChatID: "direct", PrivateChat: true, Body: "record: test"}, tc.private},
+				{MessageTriggerEvent{ChatID: "listed", Body: "record: test"}, tc.listedGroup},
+				{MessageTriggerEvent{ChatID: "another", Body: "record: test"}, tc.anotherGroup},
+				{MessageTriggerEvent{ChatID: "listed", Body: "ordinary message"}, false},
+			} {
+				if got := rule.watches("test", &chat.event) && rule.matchesGroups(&chat.event, at); got != chat.want {
+					t.Errorf("route for %+v = %v, want %v", chat.event, got, chat.want)
+				}
+			}
+		})
+	}
+}
+
 const messageTriggerCapturePattern = `^run task ([^|]+)\|([^|]+)\|(.)(.)(.)(.)(.)(.)(.)(.+)$`
 
 func TestMessageTriggerAgentExpandsCapturesAndSourceBody(t *testing.T) {
@@ -265,6 +310,7 @@ func TestMessageTriggerAdminConfirmationAndShell(t *testing.T) {
 	p := newMessageTriggerTestPlatform()
 	e := NewEngine("confirm-project", &stubAgent{}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
 	t.Cleanup(func() { _ = e.Stop() })
+	e.SetMultiWorkspace(t.TempDir(), filepath.Join(t.TempDir(), "bindings.json"))
 	e.SetShell("sh", "-c", "")
 	e.SetReplyFooterEnabled(true)
 	e.SetShowContextIndicator(true)
@@ -328,6 +374,15 @@ func TestMessageTriggerAdminConfirmationAndShell(t *testing.T) {
 	e.ReceiveMessage(p, &Message{MessageID: "recalled", Platform: p.Name(), Recalled: true})
 	if _, resolved := p.confirm(recalled.id, "group", "admin", true); resolved {
 		t.Fatal("admin could approve a recalled source")
+	}
+
+	msg = messageTriggerTestMessage(p, "missing-workspace", body, false)
+	msg.ChannelKey = "stale-binding"
+	e.workspaceBindings.Bind("project:"+e.name, e.effectiveWorkspaceChannelKey(msg), "Missing workspace", filepath.Join(t.TempDir(), "missing"))
+	e.ReceiveMessage(p, msg)
+	got := p.getSent()
+	if len(got) != 2 || !strings.Contains(got[1], e.i18n.T(MsgWsNotFoundHintGitOnly)) {
+		t.Fatalf("an unavailable binding should prompt for workspace setup, got %q", got)
 	}
 }
 

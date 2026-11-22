@@ -124,6 +124,16 @@ func TestFeishuMessageTriggers_KeepPlatformAllowListsAndFailClosed(t *testing.T)
 	if msg.Trigger == nil || !msg.Trigger.DirectBotMention || msg.Trigger.RuleOnly || msg.Content != "deploy" || msg.Platform != "lark" {
 		t.Fatalf("rich direct mention routed incorrectly: %#v", msg)
 	}
+
+	p.SetMessageTriggerScope(nil, true, false)
+	sendGroupHistoryText(t, p, "om_wildcard", "ou_alice", "deploy", "oc_main", "", false)
+	msg = awaitGroupHistoryMessage(t, messages)
+	if msg.Trigger == nil || !msg.Trigger.RuleOnly || msg.Trigger.PrivateChat || msg.Trigger.ChatID != "oc_main" {
+		t.Fatalf("all-groups scope did not admit group outside the explicit IDs: %#v", msg)
+	}
+	sendGroupHistoryText(t, p, "om_wildcard_forbidden_chat", "ou_alice", "deploy", "oc_forbidden", "", false)
+	sendGroupHistoryText(t, p, "om_wildcard_forbidden_sender", "ou_other", "deploy", "oc_main", "", false)
+	assertNoGroupHistoryMessage(t, messages)
 }
 
 func TestFeishuMessageTriggerReply_NativeMentionAndOriginalThread(t *testing.T) {
