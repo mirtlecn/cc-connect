@@ -90,6 +90,11 @@ type RichCardSupporter interface {
 	BuildRichCard(status CardStatus, title string, steps []ToolStep, markdown string, streaming bool, statusFooter string) string
 }
 
+// RichCardSender delivers a card already built by RichCardSupporter.
+type RichCardSender interface {
+	SendRichCard(ctx context.Context, replyCtx any, card string) error
+}
+
 // RichCardMarkdownResolver is an optional interface for platforms that need to
 // pre-process rich-card markdown before it is rendered or streamed.
 //
@@ -219,6 +224,11 @@ func (sp *streamPreview) scheduleFlushLocked(delay time.Duration) {
 		sp.mu.Lock()
 		defer sp.mu.Unlock()
 		sp.timer = nil
+		select {
+		case <-sp.timerStop:
+			return
+		default:
+		}
 		if sp.degraded {
 			return
 		}
@@ -401,6 +411,10 @@ func (sp *streamPreview) discard() {
 // interface and statusFooter is non-empty, finish falls back to appending the
 // footer inline to finalText before the regular UpdateMessage call.
 func (sp *streamPreview) finish(finalText, statusFooter string) bool {
+	return sp.finishWithContext(sp.ctx, finalText, statusFooter)
+}
+
+func (sp *streamPreview) finishWithContext(ctx context.Context, finalText, statusFooter string) bool {
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
 
@@ -420,7 +434,7 @@ func (sp *streamPreview) finish(finalText, statusFooter string) bool {
 			// Try to recover degraded preview via UpdateMessage before falling back to delete
 			if finalText != "" {
 				if updater, ok := sp.platform.(MessageUpdater); ok {
-					if err := updater.UpdateMessage(sp.ctx, sp.previewMsgID, finalText); err == nil {
+					if err := updater.UpdateMessage(ctx, sp.previewMsgID, finalText); err == nil {
 						if sp.pendingStatus != "" {
 							if statusUpdater, ok := sp.platform.(PreviewStatusUpdater); ok {
 								statusUpdater.SetPreviewStatus(sp.previewMsgID, sp.pendingStatus)
@@ -474,7 +488,7 @@ func (sp *streamPreview) finish(finalText, statusFooter string) bool {
 	// via SendPreviewStart (first flush), we must still call UpdateMessage
 	// because it may apply different formatting (e.g. Markdown→HTML for
 	// Telegram).
-	if finalText == sp.lastSentText && sp.lastSentViaUpdate && statusFooter == "" {
+	if finalText == sp.lastSentText && sp.lastSentViaUpdate && statusFooter == "" && MessageTriggerResult(ctx) == nil {
 		slog.Debug("stream preview finish: text unchanged and no footer, skipping",
 			"text_len", len(finalText))
 		return true
@@ -492,7 +506,7 @@ func (sp *streamPreview) finish(finalText, statusFooter string) bool {
 	// footer renders with small/dim styling separate from the response body.
 	if statusFooter != "" {
 		if sfu, ok := sp.platform.(StatusFooterUpdater); ok {
-			if err := sfu.UpdateMessageWithStatusFooter(sp.ctx, sp.previewMsgID, finalText, statusFooter); err == nil {
+			if err := sfu.UpdateMessageWithStatusFooter(ctx, sp.previewMsgID, finalText, statusFooter); err == nil {
 				slog.Debug("stream preview finish: success via UpdateMessageWithStatusFooter")
 				return true
 			} else {
@@ -503,7 +517,7 @@ func (sp *streamPreview) finish(finalText, statusFooter string) bool {
 		finalText = appendReplyFooter(finalText, statusFooter)
 	}
 
-	if err := updater.UpdateMessage(sp.ctx, sp.previewMsgID, finalText); err != nil {
+	if err := updater.UpdateMessage(ctx, sp.previewMsgID, finalText); err != nil {
 		slog.Debug("stream preview finish: final update FAILED, cleaning up preview", "error", err)
 		// Update failed (e.g. text too long for platform edit API).
 		// Try to delete the stale preview so caller can send a fresh message.

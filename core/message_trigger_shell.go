@@ -32,7 +32,7 @@ func (e *Engine) startMessageTriggerShell(p Platform, msg *Message, agent Agent,
 		return
 	default:
 		slog.Warn("message trigger: shell concurrency limit", "project", e.name, "rule", rule.Name)
-		e.replyToMessageTrigger(p, msg.triggerReplyCtx, e.i18n.T(MsgPreviousProcessing), "", "")
+		e.replyToMessageTrigger(p, msg.triggerReplyCtx, e.i18n.T(MsgPreviousProcessing), "")
 		return
 	}
 
@@ -52,7 +52,7 @@ func (e *Engine) startMessageTriggerShell(p Platform, msg *Message, agent Agent,
 		} else if result == "" {
 			result = e.i18n.T(MsgEmptyResponse)
 		}
-		e.replyToMessageTrigger(p, msg.triggerReplyCtx, result, "", workDir)
+		e.replyToMessageTrigger(p, msg.triggerReplyCtx, result, workDir)
 	}()
 }
 

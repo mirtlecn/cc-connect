@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net/http"
@@ -35,8 +36,15 @@ type replyContext struct {
 	messageID          int
 	triggerMentionText string
 	triggerMentionURL  string
-	triggerCC          string // rendered native mentions on the last chunk of a trigger result
-	triggerCCLength    int    // text length after Telegram parses mentions
+	triggerCCUserIDs   []string
+	triggerCCLength    int // text length after Telegram parses mentions
+}
+
+func (rc replyContext) triggerSourceMessageID() int {
+	if rc.triggerMentionURL != "" {
+		return rc.messageID
+	}
+	return 0
 }
 
 // telegramBot abstracts the Telegram bot API methods for testability.
@@ -1130,9 +1138,16 @@ type editRichMessageParams struct {
 	ReplyMarkup *models.InlineKeyboardMarkup `json:"reply_markup,omitempty"`
 }
 
+func telegramRichMarkdown(ctx context.Context, content string) string {
+	markdown := core.FormatSmartTelegramRichMarkdown(core.StripANSI(content))
+	if result, ok := core.MessageTriggerResult(ctx).(replyContext); ok {
+		return telegramTriggerRichText(result, markdown)
+	}
+	return markdown
+}
+
 func (p *Platform) sendRichMessage(ctx context.Context, chatID any, threadID int, replyMsgID int, content string, markup *models.InlineKeyboardMarkup) (*models.Message, error) {
-	cleanMd := core.StripANSI(content)
-	cleanMd = core.FormatSmartTelegramRichMarkdown(cleanMd)
+	cleanMd := telegramRichMarkdown(ctx, content)
 	isRTL := core.IsRTL(cleanMd)
 
 	var replyParams *models.ReplyParameters
@@ -1197,8 +1212,7 @@ func (p *Platform) sendRichMessage(ctx context.Context, chatID any, threadID int
 }
 
 func (p *Platform) editRichMessage(ctx context.Context, chatID any, messageID int, content string, markup *models.InlineKeyboardMarkup) (*models.Message, error) {
-	cleanMd := core.StripANSI(content)
-	cleanMd = core.FormatSmartTelegramRichMarkdown(cleanMd)
+	cleanMd := telegramRichMarkdown(ctx, content)
 	isRTL := core.IsRTL(cleanMd)
 
 	payload := editRichMessageParams{
@@ -1317,18 +1331,27 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 	return nil
 }
 
-// Send sends a new message (not a reply)
+// Send sends a new message, quoting its source for a message trigger.
 func (p *Platform) Send(ctx context.Context, rctx any, content string) error {
 	rc, ok := rctx.(replyContext)
 	if !ok {
 		return fmt.Errorf("telegram: invalid reply context type %T", rctx)
 	}
 
+	replyID := rc.triggerSourceMessageID()
+	result, isTriggerResult := core.MessageTriggerResult(ctx).(replyContext)
+	if isTriggerResult && (result.chatID != rc.chatID || result.threadID != rc.threadID || result.messageID != replyID) {
+		return fmt.Errorf("telegram: trigger result does not match the source message")
+	}
+
 	// Try native Telegram Bot API 10.x sendRichMessage first
-	if _, err := p.sendRichMessage(ctx, rc.chatID, rc.threadID, 0, content, nil); err == nil {
+	if _, err := p.sendRichMessage(ctx, rc.chatID, rc.threadID, replyID, content, nil); err == nil {
 		return nil
 	} else {
 		slog.Debug("telegram: sendRichMessage fallback", "error", err)
+	}
+	if isTriggerResult {
+		return p.replyToTrigger(ctx, result, content)
 	}
 
 	bot, err := p.connectedBot("send")
@@ -1342,6 +1365,9 @@ func (p *Platform) Send(ctx context.Context, rctx any, content string) error {
 		MessageThreadID: rc.threadID,
 		Text:            html,
 		ParseMode:       models.ParseModeHTML,
+	}
+	if replyID != 0 {
+		params.ReplyParameters = &models.ReplyParameters{MessageID: replyID}
 	}
 
 	if _, err := bot.SendMessage(ctx, params); err != nil {
@@ -1661,9 +1687,10 @@ func (p *Platform) ReconstructReplyCtx(sessionKey string) (any, error) {
 
 // telegramPreviewHandle stores the chat, thread, and message IDs for an editable preview message.
 type telegramPreviewHandle struct {
-	chatID    int64
-	threadID  int
-	messageID int
+	chatID          int64
+	threadID        int
+	messageID       int
+	sourceMessageID int
 }
 
 // SendPreviewStart sends a new message and returns a handle for subsequent edits.
@@ -1673,9 +1700,12 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 		return nil, fmt.Errorf("telegram: invalid reply context type %T", rctx)
 	}
 
+	replyID := rc.triggerSourceMessageID()
+	handle := &telegramPreviewHandle{chatID: rc.chatID, threadID: rc.threadID, sourceMessageID: replyID}
 	// Try native Telegram Bot API 10.x sendRichMessage first
-	if msg, err := p.sendRichMessage(ctx, rc.chatID, rc.threadID, 0, content, nil); err == nil && msg != nil {
-		return &telegramPreviewHandle{chatID: rc.chatID, threadID: rc.threadID, messageID: msg.ID}, nil
+	if msg, err := p.sendRichMessage(ctx, rc.chatID, rc.threadID, replyID, content, nil); err == nil && msg != nil {
+		handle.messageID = msg.ID
+		return handle, nil
 	} else {
 		slog.Debug("telegram: sendRichMessage preview start fallback", "error", err)
 	}
@@ -1691,6 +1721,9 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 		MessageThreadID: rc.threadID,
 		Text:            html,
 		ParseMode:       models.ParseModeHTML,
+	}
+	if replyID != 0 {
+		params.ReplyParameters = &models.ReplyParameters{MessageID: replyID}
 	}
 
 	sent, err := bot.SendMessage(ctx, params)
@@ -1722,7 +1755,8 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 			return nil, fmt.Errorf("telegram: send preview: %w", err)
 		}
 	}
-	return &telegramPreviewHandle{chatID: rc.chatID, threadID: rc.threadID, messageID: sent.ID}, nil
+	handle.messageID = sent.ID
+	return handle, nil
 }
 
 // UpdateMessage edits an existing message identified by previewHandle.
@@ -1732,6 +1766,10 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 		return fmt.Errorf("telegram: invalid preview handle type %T", previewHandle)
 	}
 
+	result, isTriggerResult := core.MessageTriggerResult(ctx).(replyContext)
+	if isTriggerResult && (result.chatID != h.chatID || result.threadID != h.threadID || result.messageID != h.sourceMessageID) {
+		return fmt.Errorf("telegram: trigger result does not match the preview source")
+	}
 	// Try native Telegram Bot API 10.x editRichMessage first
 	if _, err := p.editRichMessage(ctx, h.chatID, h.messageID, content, nil); err == nil {
 		return nil
@@ -1744,16 +1782,21 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 		return err
 	}
 
-	html := core.FormatSmartTelegramHTML(content)
+	formatted := core.FormatSmartTelegramHTML(content)
+	var sender, cc string
+	if isTriggerResult {
+		sender, cc = telegramTriggerHTML(result)
+		formatted = sender + formatted + cc
+	}
 	slog.Debug("telegram: UpdateMessage",
-		"content_len", len(content), "html_len", len(html),
+		"content_len", len(content), "html_len", len(formatted),
 		"content_prefix", truncateForLog(content, 80),
-		"html_prefix", truncateForLog(html, 80))
+		"html_prefix", truncateForLog(formatted, 80))
 
 	params := &tgbot.EditMessageTextParams{
 		ChatID:    h.chatID,
 		MessageID: h.messageID,
-		Text:      html,
+		Text:      formatted,
 		ParseMode: models.ParseModeHTML,
 	}
 
@@ -1764,14 +1807,18 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 			return nil
 		}
 		if strings.Contains(errMsg, "can't parse") {
-			slog.Warn("telegram: HTML rejected by Telegram, editing as plain text",
+			slog.Warn("telegram: HTML rejected by Telegram, escaping body",
 				"method", "UpdateMessage",
 				"error", errMsg,
-				"html_prefix", truncateForLog(html, 200),
-				"html_len", len(html),
+				"html_prefix", truncateForLog(formatted, 200),
+				"html_len", len(formatted),
 			)
-			params.Text = content
-			params.ParseMode = ""
+			if isTriggerResult {
+				params.Text = sender + html.EscapeString(content) + cc
+			} else {
+				params.Text = content
+				params.ParseMode = ""
+			}
 			if _, err2 := bot.EditMessageText(ctx, params); err2 != nil {
 				if strings.Contains(err2.Error(), "not modified") {
 					return nil
@@ -1801,7 +1848,7 @@ func (p *Platform) sendChunked(ctx context.Context, bot telegramBot, rc replyCon
 			Text:            chunk,
 			ParseMode:       models.ParseModeHTML,
 		}
-		if i == 0 && rc.messageID != 0 {
+		if (i == 0 || rc.triggerSourceMessageID() != 0) && rc.messageID != 0 {
 			params.ReplyParameters = &models.ReplyParameters{MessageID: rc.messageID}
 		}
 		if _, err := bot.SendMessage(ctx, params); err != nil {

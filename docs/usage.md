@@ -1070,7 +1070,7 @@ The response must be a JSON object containing only `decision` and `reason`. The 
 
 ### Actions, confirmation, and CC
 
-- `action = "agent"` sends the message through the project's existing Agent session and queue. Set `prompt` to prepend instructions. The final reply quotes the original group message and mentions its sender.
+- `action = "agent"` uses the project's existing Agent session, queue, and reply display settings. Set `prompt` to prepend instructions. The final reply quotes the original group message and mentions its sender.
 - `action = "shell"` runs the fixed `command` on the machine running cc-connect, in the project's resolved working directory. It uses the configured shell, has a 60-second timeout, and replies to the original group message with standard output and standard error (stdout and stderr). The incoming message text stays out of the command.
 - Manual mode and a model decision of `confirm` send a **Yes / No** prompt quoting the original message. A `cc` line mentions explicit administrators for that platform in the project's `admin_from`. Only administrators authorized by `admin_from` can decide. Enter their actual platform user IDs, which they can find with the bot's `/whoami` command. Use Feishu or Lark OpenIDs (`ou_…`) or positive Telegram user IDs. The wildcard `*` cannot identify an administrator to mention. A request expires after five minutes, when the project's rules are reloaded or edited, or when the process restarts.
 - `cc_enabled = true` adds a `cc` line with native mentions for `cc_user_ids` to the final reply. Enter at least one platform user ID when enabled. Turning it off keeps the IDs for later use. The confirmation prompt gets its recipients from `admin_from` independently.

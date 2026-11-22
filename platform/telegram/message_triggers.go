@@ -17,6 +17,13 @@ import (
 
 const triggerConfirmationPrefix = "trigger-confirm:"
 const triggerCCLabel = "\n\ncc "
+const triggerHTMLMention = `<a href="tg://user?id=%[1]s">@%[1]s</a>`
+const triggerMarkdownMention = `[@%[1]s](tg://user?id=%[1]s)`
+
+var escapeTriggerMentionMarkdown = strings.NewReplacer(
+	"\\", "\\\\", "[", "\\[", "]", "\\]", "*", "\\*", "_", "\\_", "`", "\\`",
+	"~", "\\~", "|", "\\|", "=", "\\=", "<", "&lt;", ">", "&gt;", "&", "&amp;",
+)
 
 func (p *Platform) SetMessageTriggerGroups(groups []string) {
 	p.mu.Lock()
@@ -124,11 +131,11 @@ func (p *Platform) WithMessageTriggerCC(rctx any, userIDs []string) (any, error)
 	if !ok || rc.triggerMentionURL == "" {
 		return nil, fmt.Errorf("telegram: cc requires the trigger reply context")
 	}
-	mentions, length := telegramTriggerMentions(userIDs)
-	if mentions == "" {
+	ccIDs, length := telegramTriggerUsers(userIDs)
+	if len(ccIDs) == 0 {
 		return nil, fmt.Errorf("telegram: cc requires a numeric user ID")
 	}
-	rc.triggerCC = triggerCCLabel + mentions
+	rc.triggerCCUserIDs = ccIDs
 	rc.triggerCCLength = len(triggerCCLabel) + length
 	if rc.triggerCCLength+utf8.RuneCountInString(rc.triggerMentionText)+1 >= telegramMaxMessageLen {
 		return nil, fmt.Errorf("telegram: trigger cc exceeds the message length limit")
@@ -136,9 +143,9 @@ func (p *Platform) WithMessageTriggerCC(rctx any, userIDs []string) (any, error)
 	return rc, nil
 }
 
-func telegramTriggerMentions(userIDs []string) (string, int) {
+func telegramTriggerUsers(userIDs []string) ([]string, int) {
 	seen := make(map[string]struct{}, len(userIDs))
-	mentions := make([]string, 0, len(userIDs))
+	ids := make([]string, 0, len(userIDs))
 	length := 0
 	for _, id := range userIDs {
 		id = strings.TrimSpace(id)
@@ -148,11 +155,33 @@ func telegramTriggerMentions(userIDs []string) (string, int) {
 		}
 		if _, ok := seen[id]; !ok {
 			seen[id] = struct{}{}
-			mentions = append(mentions, fmt.Sprintf(`<a href="tg://user?id=%s">@%s</a>`, id, id))
+			ids = append(ids, id)
 			length += len(id) + 1 // The rendered mention includes its leading @.
 		}
 	}
-	return strings.Join(mentions, " "), length + max(0, len(mentions)-1)
+	return ids, length + max(0, len(ids)-1)
+}
+
+func formatTelegramTriggerCC(userIDs []string, format string) string {
+	if len(userIDs) == 0 {
+		return ""
+	}
+	mentions := make([]string, 0, len(userIDs))
+	for _, id := range userIDs {
+		mentions = append(mentions, fmt.Sprintf(format, id))
+	}
+	return triggerCCLabel + strings.Join(mentions, " ")
+}
+
+func telegramTriggerRichText(rc replyContext, content string) string {
+	// Apply mentions after formatting so they stay outside the answer's collapsible details.
+	sender := fmt.Sprintf("[%s](%s)", escapeTriggerMentionMarkdown.Replace(rc.triggerMentionText), rc.triggerMentionURL)
+	return sender + "\n\n" + content + formatTelegramTriggerCC(rc.triggerCCUserIDs, triggerMarkdownMention)
+}
+
+func telegramTriggerHTML(rc replyContext) (sender, cc string) {
+	sender = fmt.Sprintf(`<a href="%s">%s</a>`, rc.triggerMentionURL, html.EscapeString(rc.triggerMentionText)) + "\n"
+	return sender, formatTelegramTriggerCC(rc.triggerCCUserIDs, triggerHTMLMention)
 }
 
 func (p *Platform) replyToTrigger(ctx context.Context, rc replyContext, content string) error {
@@ -160,7 +189,7 @@ func (p *Platform) replyToTrigger(ctx context.Context, rc replyContext, content 
 	if err != nil {
 		return err
 	}
-	mention := fmt.Sprintf(`<a href="%s">%s</a>`, rc.triggerMentionURL, html.EscapeString(rc.triggerMentionText))
+	mention, cc := telegramTriggerHTML(rc)
 	// Leave room for the sender's mention and the final cc after Telegram
 	// parses the HTML. If this reply is split, attach the cc only to its end.
 	maxLen := telegramMaxMessageLen - utf8.RuneCountInString(rc.triggerMentionText) - 1 - rc.triggerCCLength
@@ -168,10 +197,10 @@ func (p *Platform) replyToTrigger(ctx context.Context, rc replyContext, content 
 	for i, chunk := range chunks {
 		prefix, footer := "", ""
 		if i == 0 {
-			prefix = mention + "\n"
+			prefix = mention
 		}
 		if i == len(chunks)-1 {
-			footer = rc.triggerCC
+			footer = cc
 		}
 		params := &tgbot.SendMessageParams{
 			ChatID: rc.chatID, MessageThreadID: rc.threadID,
@@ -204,8 +233,8 @@ func (p *Platform) SendMessageTriggerConfirmation(ctx context.Context, rctx any,
 	if id == "" || len(data)+1 > 64 {
 		return fmt.Errorf("telegram: invalid trigger confirmation button data length")
 	}
-	mentions, length := telegramTriggerMentions(adminIDs)
-	if mentions == "" {
+	admins, length := telegramTriggerUsers(adminIDs)
+	if len(admins) == 0 {
 		return fmt.Errorf("telegram: trigger confirmation requires a numeric administrator ID")
 	}
 	if length+len(triggerCCLabel)+utf8.RuneCountInString(prompt) > telegramMaxMessageLen {
@@ -216,7 +245,7 @@ func (p *Platform) SendMessageTriggerConfirmation(ctx context.Context, rctx any,
 		return err
 	}
 	params := &tgbot.SendMessageParams{
-		ChatID: rc.chatID, MessageThreadID: rc.threadID, Text: html.EscapeString(prompt) + triggerCCLabel + mentions, ParseMode: models.ParseModeHTML,
+		ChatID: rc.chatID, MessageThreadID: rc.threadID, Text: html.EscapeString(prompt) + formatTelegramTriggerCC(admins, triggerHTMLMention), ParseMode: models.ParseModeHTML,
 		ReplyParameters: &models.ReplyParameters{MessageID: rc.messageID},
 		ReplyMarkup: &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
 			{Text: yesLabel, CallbackData: data + "y"},

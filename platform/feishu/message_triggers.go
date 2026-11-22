@@ -116,31 +116,39 @@ func (p *Platform) TriggerReplyContext(msg *core.Message) (any, error) {
 	if name == "" {
 		name = msg.UserID
 	}
-	rc.triggerMention = fmt.Sprintf(`<at user_id="%s">%s</at>`, msg.UserID, html.EscapeString(name))
+	rc.triggerSenderID = msg.UserID
+	rc.triggerSenderName = name
 	return rc, nil
 }
 
 func (p *Platform) replyToTrigger(ctx context.Context, rc replyContext, content string) error {
-	msgType, body := buildReplyContent(rc.triggerMention + "\n" + content + rc.triggerCC)
+	msgType, body := buildReplyContent(rc.triggerResultText(content))
 	return p.replyMessage(ctx, rc, msgType, body)
+}
+
+func (rc replyContext) triggerResultText(content string) string {
+	mention := fmt.Sprintf(`<at user_id="%s">%s</at>`, rc.triggerSenderID, html.EscapeString(rc.triggerSenderName))
+	if len(rc.triggerCCIDs) != 0 {
+		content += "\n\ncc " + feishuTriggerMentions(rc.triggerCCIDs, `<at user_id="%s"></at>`)
+	}
+	return mention + "\n" + content
 }
 
 func (p *Platform) WithMessageTriggerCC(rctx any, userIDs []string) (any, error) {
 	rc, ok := rctx.(replyContext)
-	if !ok || rc.triggerMention == "" {
+	if !ok || rc.triggerSenderID == "" {
 		return nil, fmt.Errorf("%s: cc requires the trigger reply context", p.tag())
 	}
-	mentions := feishuTriggerMentions(userIDs, `<at user_id="%s"></at>`)
-	if mentions == "" {
+	rc.triggerCCIDs = feishuTriggerUserIDs(userIDs)
+	if len(rc.triggerCCIDs) == 0 {
 		return nil, fmt.Errorf("%s: cc requires a Feishu user OpenID", p.tag())
 	}
-	rc.triggerCC = "\n\ncc " + mentions
 	return rc, nil
 }
 
-func feishuTriggerMentions(userIDs []string, format string) string {
+func feishuTriggerUserIDs(userIDs []string) []string {
 	seen := make(map[string]struct{}, len(userIDs))
-	mentions := make([]string, 0, len(userIDs))
+	ids := make([]string, 0, len(userIDs))
 	for _, id := range userIDs {
 		id = strings.TrimSpace(id)
 		if !strings.HasPrefix(id, "ou_") || len(id) <= len("ou_") || !isValidFeishuLookupID(id) {
@@ -148,10 +156,46 @@ func feishuTriggerMentions(userIDs []string, format string) string {
 		}
 		if _, ok := seen[id]; !ok {
 			seen[id] = struct{}{}
-			mentions = append(mentions, fmt.Sprintf(format, id))
+			ids = append(ids, id)
 		}
 	}
+	return ids
+}
+
+func feishuTriggerMentions(userIDs []string, format string) string {
+	mentions := make([]string, 0, len(userIDs))
+	for _, id := range userIDs {
+		mentions = append(mentions, fmt.Sprintf(format, id))
+	}
 	return strings.Join(mentions, " ")
+}
+
+func withTriggerCardResult(ctx context.Context, cardJSON string) (string, error) {
+	rc, ok := core.MessageTriggerResult(ctx).(replyContext)
+	if !ok || rc.triggerSenderID == "" {
+		return cardJSON, nil
+	}
+	var card map[string]any
+	if err := json.Unmarshal([]byte(cardJSON), &card); err != nil {
+		return "", fmt.Errorf("feishu: decode trigger result card: %w", err)
+	}
+	body, ok := card["body"].(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("feishu: trigger result card has no body")
+	}
+	elements, ok := body["elements"].([]any)
+	if !ok {
+		return "", fmt.Errorf("feishu: trigger result card body has no elements")
+	}
+	sender := map[string]any{"tag": "markdown", "content": fmt.Sprintf(`<at id=%s></at>`, rc.triggerSenderID)}
+	elements = append([]any{sender}, elements...)
+	if len(rc.triggerCCIDs) != 0 {
+		mentions := feishuTriggerMentions(rc.triggerCCIDs, `<at id=%s></at>`)
+		elements = append(elements, map[string]any{"tag": "markdown", "content": "cc " + mentions})
+	}
+	body["elements"] = elements
+	encoded, err := json.Marshal(card)
+	return string(encoded), err
 }
 
 func (p *Platform) SetMessageTriggerConfirmationHandler(handler func(id, chatID, userID string, approved bool) (feedback string, resolved bool)) {
@@ -165,7 +209,7 @@ func (p *Platform) SendMessageTriggerConfirmation(ctx context.Context, rctx any,
 	if !ok || rc.messageID == "" {
 		return fmt.Errorf("%s: trigger confirmation requires the source message", p.tag())
 	}
-	mentions := feishuTriggerMentions(adminIDs, `<at id=%s></at>`)
+	mentions := feishuTriggerMentions(feishuTriggerUserIDs(adminIDs), `<at id=%s></at>`)
 	if mentions == "" {
 		return fmt.Errorf("%s: trigger confirmation requires a Feishu administrator OpenID", p.tag())
 	}

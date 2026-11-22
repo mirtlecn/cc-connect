@@ -5597,6 +5597,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	state.mu.Lock()
 	workspaceDir := state.workspaceDir
 	triggerReplyCtx := state.triggerReplyCtx
+	replyCtx = triggerReplyCtx.route(replyCtx)
 	replyAgent := state.agent
 	if replyAgent == nil {
 		replyAgent = e.agent
@@ -5607,8 +5608,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	sendWorkspace := func(p Platform, replyCtx any, content string) {
 		e.sendForWorkspace(p, replyCtx, content, workspaceDir)
 	}
-	sendWorkspaceWithError := func(p Platform, replyCtx any, content string) error {
-		return e.sendWithErrorForWorkspace(p, replyCtx, content, workspaceDir)
+	sendWorkspaceWithError := func(ctx context.Context, p Platform, replyCtx any, content string) error {
+		return e.sendWithContext(ctx, p, replyCtx, e.renderOutgoingContentForWorkspace(p, content, workspaceDir))
 	}
 
 	// Streaming card: aggregate entire turn into a single updatable card.
@@ -5617,18 +5618,16 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	var cardThinkingText string        // latest thinking text
 	var cardAnswerText strings.Builder // accumulated answer text
 
-	if scp, ok := state.platform.(StreamingCardPlatform); ok && triggerReplyCtx == nil {
-		if sc, err := scp.CreateStreamingCard(e.ctx, state.replyCtx); err != nil {
+	if scp, ok := state.platform.(StreamingCardPlatform); ok {
+		if sc, err := scp.CreateStreamingCard(e.ctx, replyCtx); err != nil {
 			slog.Warn("streaming card creation failed, falling back to normal messages", "error", err)
 		} else {
 			streamCard = sc
 			slog.Info("streaming card created for turn", "session", sessionKey)
 		}
 	}
-	previewCfg := e.streamPreview
-	previewCfg.Enabled = previewCfg.Enabled && triggerReplyCtx == nil
-	sp := newStreamPreview(previewCfg, state.platform, state.replyCtx, e.ctx, workspaceRenderer)
-	cp := newCompactProgressWriter(e.ctx, state.platform, state.replyCtx, e.agent.Name(), e.i18n.CurrentLang(), workspaceRenderer)
+	sp := newStreamPreview(e.streamPreview, state.platform, replyCtx, e.ctx, workspaceRenderer)
+	cp := newCompactProgressWriter(e.ctx, state.platform, replyCtx, e.agent.Name(), e.i18n.CurrentLang(), workspaceRenderer)
 	state.mu.Unlock()
 
 	// Send instant confirmation reply if enabled and no streaming card is active.
@@ -5639,7 +5638,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		if replyContent == "" {
 			replyContent = e.i18n.T(MsgStarting)
 		}
-		e.send(state.platform, state.replyCtx, replyContent)
+		e.send(state.platform, replyCtx, replyContent)
 	}
 
 	// Idle timeout: resets on every received event (0 = disabled)
@@ -5789,6 +5788,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 		state.mu.Lock()
 		p := state.platform
+		permissionReplyCtx := state.replyCtx
 		state.mu.Unlock()
 
 		// main codebase has no per-session quiet flag; pr309 referenced
@@ -5797,8 +5797,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		richCardSupporter, hasRichCard := p.(RichCardSupporter)
 		// Card 2.0 rich-card path is opt-in via [display] mode = "rich".
 		// Default "legacy" keeps upstream behavior for all platforms.
-		if e.display.CardMode != "rich" || triggerReplyCtx != nil {
+		if e.display.CardMode != "rich" {
 			hasRichCard = false
+		} else if availability, ok := p.(interface{ RichCardsEnabled() bool }); ok {
+			hasRichCard = hasRichCard && availability.RichCardsEnabled()
 		}
 		richMarkdownResolver, hasRichMarkdownResolver := p.(RichCardMarkdownResolver)
 		resolveRichCardMarkdown := func(markdown string, final bool) string {
@@ -5865,7 +5867,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// When thinking messages are hidden, behavior depends on display mode:
 			//   quiet:   append separator to keep all text in one card
 			//   compact: freeze+detach to split text into separate cards
-			if triggerReplyCtx == nil && !e.display.ThinkingMessages && len(textParts) > segmentStart {
+			if !e.display.ThinkingMessages && len(textParts) > segmentStart {
 				if e.display.Mode == "quiet" {
 					if sp.canPreview() && sp.appendSeparator("\n\n") {
 						textParts = append(textParts, "\n\n")
@@ -5896,7 +5898,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// --- Original path (fallback) ---
 				// Flush accumulated text segment before thinking display
 				previewActive := sp.canPreview()
-				if triggerReplyCtx == nil && len(textParts) > segmentStart {
+				if len(textParts) > segmentStart {
 					if !previewActive {
 						segment := strings.Join(textParts[segmentStart:], "")
 						if segment != "" {
@@ -5952,7 +5954,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// When tool messages are hidden, behavior depends on display mode:
 			//   quiet:   append separator to keep all text in one card
 			//   compact: freeze+detach to split text into separate cards
-			if triggerReplyCtx == nil && !e.display.ToolMessages && len(textParts) > segmentStart {
+			if !e.display.ToolMessages && len(textParts) > segmentStart {
 				if e.display.Mode == "quiet" {
 					if sp.canPreview() && sp.appendSeparator("\n\n") {
 						textParts = append(textParts, "\n\n")
@@ -6004,7 +6006,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// --- Original path (fallback) ---
 				// Flush accumulated text segment before tool display
 				previewActive := sp.canPreview()
-				if triggerReplyCtx == nil && len(textParts) > segmentStart {
+				if len(textParts) > segmentStart {
 					if !previewActive {
 						segment := strings.Join(textParts[segmentStart:], "")
 						if segment != "" {
@@ -6100,12 +6102,6 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			content := event.Content
 			if e.display.HideAgentFooter {
 				content = stripAgentFooterLines(content)
-			}
-			if triggerReplyCtx != nil {
-				if content != "" && !isEllipsisOnly(content) {
-					textParts = append(textParts, content)
-				}
-				break
 			}
 			if content != "" && !isEllipsisOnly(content) {
 				// Pre-compute silentHold transition including this chunk so the
@@ -6265,7 +6261,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 			// Flush accumulated text segment before permission prompt
 			previewActive := sp.canPreview()
-			if triggerReplyCtx == nil && len(textParts) > segmentStart {
+			if len(textParts) > segmentStart {
 				if !previewActive {
 					segment := strings.Join(textParts[segmentStart:], "")
 					if segment != "" {
@@ -6300,7 +6296,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			state.mu.Unlock()
 
 			if isAskQuestion {
-				e.sendAskQuestionPrompt(p, replyCtx, event.Questions, 0)
+				e.sendAskQuestionPrompt(p, permissionReplyCtx, event.Questions, 0)
 			} else {
 				permLimit := e.display.ToolMaxLen
 				if permLimit > 0 {
@@ -6308,7 +6304,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 				toolInput := truncateIf(event.ToolInput, permLimit)
 				prompt := fmt.Sprintf(e.i18n.T(MsgPermissionPrompt), event.ToolName, toolInput)
-				e.sendPermissionPrompt(p, replyCtx, prompt, event.ToolName, toolInput)
+				e.sendPermissionPrompt(p, permissionReplyCtx, prompt, event.ToolName, toolInput)
 			}
 
 			// Stop idle timer while waiting for user permission response;
@@ -6383,7 +6379,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// When tool progress is hidden, segmentStart stays 0 and textParts
 			// contains ALL text across tool boundaries. Prefer the full accumulated
 			// text over event.Content which only contains the last assistant segment.
-			if len(textParts) > 0 && segmentStart == 0 && (!e.display.ToolMessages || triggerReplyCtx != nil) {
+			if len(textParts) > 0 && segmentStart == 0 && !e.display.ToolMessages {
 				fullResponse = strings.Join(textParts, "")
 			} else if fullResponse == "" && len(textParts) > 0 {
 				fullResponse = strings.Join(textParts, "")
@@ -6593,13 +6589,13 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			state.mu.Unlock()
 
 			replyStart := time.Now()
+			resultCtx := e.ctx
+			if !isSilent {
+				resultCtx = triggerReplyCtx.resultContext(e.ctx, p)
+			}
 
 			// --- StreamingCard path ---
-			if triggerReplyCtx != nil {
-				if !isSilent {
-					e.replyToMessageTrigger(p, triggerReplyCtx, fullResponse, statusFooter, workspaceDir)
-				}
-			} else if streamCard != nil && !streamCard.Failed() {
+			if streamCard != nil && !streamCard.Failed() {
 				sp.finish("", "") // cleanup preview (should be no-op if card was active)
 				// Silent reply: never render the NO_REPLY marker into the card.
 				// cardAnswerText holds only the text streamed BEFORE the marker
@@ -6613,15 +6609,13 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					cardBody = strings.TrimRight(cardAnswerText.String(), " \t\r\n")
 				}
 				finalContent := buildCardContent(cardThinkingText, cardToolCalls, cardBody)
-				if err := streamCard.Finalize(e.ctx, finalContent); err != nil {
+				if err := streamCard.Finalize(resultCtx, finalContent); err != nil {
 					slog.Error("streaming card finalize failed, sending fallback", "error", err)
 					// Fallback: send the response as a normal message — but never
 					// for a silent reply, which has no deliverable content.
 					if !isSilent {
-						for _, chunk := range SplitMessageCodeFenceAware(fullResponse, maxPlatformMessageLen) {
-							if err := sendWorkspaceWithError(p, replyCtx, chunk); err != nil {
-								return
-							}
+						if !sendChunksWithStatusFooter(resultCtx, p, replyCtx, fullResponse, "", sendWorkspaceWithError) {
+							return
 						}
 					}
 				}
@@ -6669,6 +6663,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 				slog.Info("silent reply suppressed", "session", session.ID)
 			} else if hasRichCard {
+				sendRichCard := p.Send
+				if sender, ok := p.(RichCardSender); ok {
+					sendRichCard = sender.SendRichCard
+				}
 				parts := []string{fullResponse}
 				if splitter, ok := p.(MarkdownTableSplitter); ok {
 					parts = splitter.SplitMarkdownByTables(fullResponse, 5)
@@ -6679,6 +6677,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 				finalBody := resolveRichCardMarkdown(parts[0], true)
 				finalCard := richCardSupporter.BuildRichCard(CardStatusDone, "", toolSteps, finalBody, false, richStatusFooter)
+				firstCardCtx := e.ctx
+				if len(parts) == 1 {
+					firstCardCtx = resultCtx
+				}
 				if cardMessageID != nil {
 					// Forced final flush via cardkit-v1 streaming text update before
 					// flipping status to Done via full-card Patch. The throttle in the
@@ -6692,24 +6694,28 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						}
 					}
 					if updater, ok := p.(MessageUpdater); ok {
-						if err := updater.UpdateMessage(e.ctx, cardMessageID, finalCard); err != nil {
+						if err := updater.UpdateMessage(firstCardCtx, cardMessageID, finalCard); err != nil {
 							slog.Debug("rich card: final update failed, falling back to send", "platform", p.Name(), "error", err)
-							if err := p.Send(e.ctx, replyCtx, finalCard); err != nil {
+							if err := sendRichCard(firstCardCtx, replyCtx, finalCard); err != nil {
 								slog.Error("failed to send rich card reply", "error", err)
 								return
 							}
 						}
 					}
 				} else {
-					if err := p.Send(e.ctx, replyCtx, finalCard); err != nil {
+					if err := sendRichCard(firstCardCtx, replyCtx, finalCard); err != nil {
 						slog.Error("failed to send rich card reply", "error", err)
 						return
 					}
 				}
-				for _, overflow := range parts[1:] {
+				for i, overflow := range parts[1:] {
 					overflowBody := resolveRichCardMarkdown(overflow, true)
 					overflowCard := richCardSupporter.BuildRichCard(CardStatusDone, "", nil, overflowBody, false, richStatusFooter)
-					if err := p.Send(e.ctx, replyCtx, overflowCard); err != nil {
+					cardCtx := e.ctx
+					if i == len(parts)-2 {
+						cardCtx = resultCtx
+					}
+					if err := sendRichCard(cardCtx, replyCtx, overflowCard); err != nil {
 						slog.Error("failed to send overflow rich card", "error", err)
 						return
 					}
@@ -6719,28 +6725,35 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// only send the unsent remainder. When tool progress is hidden, tool events don't surface
 				// side-channel messages and segmentStart stays 0, so keep normal finalize flow.
 				sp.discard()
-				if segmentStart < len(textParts) {
-					unsent := strings.Join(textParts[segmentStart:], "")
-					if unsent != "" {
-						if !sendChunksWithStatusFooter(e.ctx, p, replyCtx, unsent, statusFooter, sendWorkspaceWithError) {
-							return
-						}
+				unsent := strings.Join(textParts[segmentStart:], "")
+				if unsent == "" && triggerReplyCtx != nil {
+					// Some Agents supply the last answer only in EventResult.
+					// Remove already-visible text before sending that answer.
+					delivered := strings.TrimSpace(strings.Join(textParts, ""))
+					body := strings.TrimSpace(fullResponse)
+					if !strings.HasSuffix(delivered, body) {
+						unsent = strings.TrimSpace(strings.TrimPrefix(body, delivered))
+					}
+				}
+				if unsent != "" || triggerReplyCtx.hasCC() {
+					if !sendChunksWithStatusFooter(resultCtx, p, replyCtx, unsent, statusFooter, sendWorkspaceWithError) {
+						return
 					}
 				}
 			} else if suppressDuplicate {
 				sp.discard()
 				metaOnly := strings.TrimSpace(strings.TrimPrefix(fullResponse, baseResponse))
-				if metaOnly != "" || statusFooter != "" {
-					if !sendChunksWithStatusFooter(e.ctx, p, replyCtx, metaOnly, statusFooter, sendWorkspaceWithError) {
+				if metaOnly != "" || statusFooter != "" || triggerReplyCtx.hasCC() {
+					if !sendChunksWithStatusFooter(resultCtx, p, replyCtx, metaOnly, statusFooter, sendWorkspaceWithError) {
 						return
 					}
 				}
 				slog.Debug("EventResult: suppressed duplicate side-channel text", "response_len", len(fullResponse))
-			} else if sp.finish(fullResponse, statusFooter) {
+			} else if sp.finishWithContext(resultCtx, fullResponse, statusFooter) {
 				slog.Debug("EventResult: finalized via stream preview", "response_len", len(fullResponse), "footer_len", len(statusFooter))
 			} else {
 				slog.Debug("EventResult: sending via p.Send (preview inactive or failed)", "response_len", len(fullResponse), "footer_len", len(statusFooter))
-				if !sendChunksWithStatusFooter(e.ctx, p, replyCtx, fullResponse, statusFooter, sendWorkspaceWithError) {
+				if !sendChunksWithStatusFooter(resultCtx, p, replyCtx, fullResponse, statusFooter, sendWorkspaceWithError) {
 					return
 				}
 			}
@@ -6874,8 +6887,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// further down — and platforms derive the parent message_id from
 				// it for the reply quote. Without this reassignment, msg2's
 				// reply would quote msg1's bubble.
-				replyCtx = queued.replyCtx
 				triggerReplyCtx = queued.triggerReplyCtx
+				replyCtx = triggerReplyCtx.route(queued.replyCtx)
 				// Rich-mode per-turn state must reset too — otherwise EventText for
 				// the queued message would StreamRichCardText against the previous
 				// turn's cardID, overwriting that card's body with the new turn's
@@ -6888,10 +6901,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				queuedRenderer := func(content string) string {
 					return e.renderOutgoingContentForWorkspace(queued.platform, content, workspaceDir)
 				}
-				previewCfg = e.streamPreview
-				previewCfg.Enabled = previewCfg.Enabled && triggerReplyCtx == nil
-				sp = newStreamPreview(previewCfg, queued.platform, queued.replyCtx, e.ctx, queuedRenderer)
-				cp = newCompactProgressWriter(e.ctx, queued.platform, queued.replyCtx, e.agent.Name(), e.i18n.CurrentLang(), queuedRenderer)
+				sp = newStreamPreview(e.streamPreview, queued.platform, replyCtx, e.ctx, queuedRenderer)
+				cp = newCompactProgressWriter(e.ctx, queued.platform, replyCtx, e.agent.Name(), e.i18n.CurrentLang(), queuedRenderer)
 
 				// Reset streaming card state for the next turn
 				streamCard = nil
@@ -6900,8 +6911,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				cardAnswerText.Reset()
 
 				// Try to create a new streaming card for the queued turn
-				if scp, ok := queued.platform.(StreamingCardPlatform); ok && triggerReplyCtx == nil {
-					if sc, err := scp.CreateStreamingCard(e.ctx, queued.replyCtx); err != nil {
+				if scp, ok := queued.platform.(StreamingCardPlatform); ok {
+					if sc, err := scp.CreateStreamingCard(e.ctx, replyCtx); err != nil {
 						slog.Warn("streaming card creation failed for queued turn", "error", err)
 					} else {
 						streamCard = sc
@@ -6914,7 +6925,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					if replyContent == "" {
 						replyContent = e.i18n.T(MsgStarting)
 					}
-					e.send(queued.platform, queued.replyCtx, replyContent)
+					e.send(queued.platform, replyCtx, replyContent)
 				}
 
 				session.AddHistory("user", queued.content)
@@ -6999,11 +7010,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						break
 					}
 				}
-				if triggerReplyCtx != nil {
-					e.replyToMessageTrigger(p, triggerReplyCtx, userMsg, "", workspaceDir)
-				} else {
-					e.send(p, replyCtx, userMsg)
-				}
+				_ = e.sendWithContext(triggerReplyCtx.resultContext(e.ctx, p), p, replyCtx, userMsg)
 			}
 			// Only drop queued messages if the agent session is dead.
 			// Some agents (e.g. Codex) emit EventError for per-turn failures
@@ -7057,28 +7064,19 @@ channelClosed:
 			Content:    fullResponse,
 		})
 
-		if triggerReplyCtx != nil {
-			e.replyToMessageTrigger(p, triggerReplyCtx, fullResponse, "", workspaceDir)
-		} else if toolCount > 0 && segmentStart > 0 {
+		resultCtx := triggerReplyCtx.resultContext(e.ctx, p)
+		if toolCount > 0 && segmentStart > 0 {
 			sp.discard()
-			if segmentStart < len(textParts) {
-				unsent := strings.Join(textParts[segmentStart:], "")
-				if unsent != "" {
-					for _, chunk := range SplitMessageCodeFenceAware(unsent, maxPlatformMessageLen) {
-						if err := sendWorkspaceWithError(p, replyCtx, chunk); err != nil {
-							return
-						}
-					}
-				}
-			}
-		} else if sp.finish(fullResponse, "") {
-			slog.Debug("stream preview: finalized in-place (process exited)")
-		} else {
-			for _, chunk := range SplitMessageCodeFenceAware(fullResponse, maxPlatformMessageLen) {
-				if err := sendWorkspaceWithError(p, replyCtx, chunk); err != nil {
+			unsent := strings.Join(textParts[segmentStart:], "")
+			if unsent != "" || triggerReplyCtx.hasCC() {
+				if !sendChunksWithStatusFooter(resultCtx, p, replyCtx, unsent, "", sendWorkspaceWithError) {
 					return
 				}
 			}
+		} else if sp.finishWithContext(resultCtx, fullResponse, "") {
+			slog.Debug("stream preview: finalized in-place (process exited)")
+		} else if !sendChunksWithStatusFooter(resultCtx, p, replyCtx, fullResponse, "", sendWorkspaceWithError) {
+			return
 		}
 	}
 }
@@ -8645,10 +8643,18 @@ func (e *Engine) buildClaudeStatusLineFooter(agent Agent, session AgentSession, 
 // appendReplyFooter. Returns true on success, false if any send failed (in
 // which case caller should bail). sendFn is the workspace-aware send closure
 // (so the helper picks up workspace transforms like path remapping).
-func sendChunksWithStatusFooter(ctx context.Context, p Platform, replyCtx any, body, statusFooter string, sendFn func(Platform, any, string) error) bool {
+func sendChunksWithStatusFooter(ctx context.Context, p Platform, replyCtx any, body, statusFooter string, sendFn func(context.Context, Platform, any, string) error) bool {
 	chunks := SplitMessageCodeFenceAware(body, maxPlatformMessageLen)
+	intermediateCtx := ctx
+	if len(chunks) > 1 && MessageTriggerResult(ctx) != nil {
+		intermediateCtx = context.WithValue(ctx, messageTriggerResultKey{}, nil)
+	}
 	for i, chunk := range chunks {
 		isLast := i == len(chunks)-1
+		chunkCtx := intermediateCtx
+		if isLast {
+			chunkCtx = ctx
+		}
 		if isLast && statusFooter != "" {
 			if sfs, ok := p.(StatusFooterSender); ok {
 				if err := sfs.SendWithStatusFooter(ctx, replyCtx, chunk, statusFooter); err == nil {
@@ -8659,7 +8665,7 @@ func sendChunksWithStatusFooter(ctx context.Context, p Platform, replyCtx any, b
 			}
 			chunk = appendReplyFooter(chunk, statusFooter)
 		}
-		if err := sendFn(p, replyCtx, chunk); err != nil {
+		if err := sendFn(chunkCtx, p, replyCtx, chunk); err != nil {
 			return false
 		}
 	}
@@ -12859,12 +12865,7 @@ func (e *Engine) renderOutgoingContentForWorkspace(p Platform, content, workspac
 }
 
 func (e *Engine) sendWithErrorForWorkspace(p Platform, replyCtx any, content, workspaceDir string) error {
-	if err := e.waitOutgoing(p); err != nil {
-		slog.Warn("outgoing rate limit: context cancelled", "platform", p.Name(), "error", err)
-		return err
-	}
-	content = e.renderOutgoingContentForWorkspace(p, content, workspaceDir)
-	return e.sendAlreadyRenderedWithError(p, replyCtx, content)
+	return e.sendWithContext(e.ctx, p, replyCtx, e.renderOutgoingContentForWorkspace(p, content, workspaceDir))
 }
 
 func (e *Engine) sendForWorkspace(p Platform, replyCtx any, content, workspaceDir string) {
@@ -12921,16 +12922,24 @@ func (e *Engine) renderCardForPlatformWorkspace(p Platform, card *Card, workspac
 // sendWithError applies outgoing rate limiting and p.Send. It logs wait
 // cancellation and platform failures, and returns a non-nil error on either.
 func (e *Engine) sendWithError(p Platform, replyCtx any, content string) error {
+	return e.sendWithContext(e.ctx, p, replyCtx, content)
+}
+
+func (e *Engine) sendWithContext(ctx context.Context, p Platform, replyCtx any, content string) error {
 	if err := e.waitOutgoing(p); err != nil {
 		slog.Warn("outgoing rate limit: context cancelled", "platform", p.Name(), "error", err)
 		return err
 	}
-	return e.sendAlreadyRenderedWithError(p, replyCtx, content)
+	return e.sendAlreadyRenderedWithContext(ctx, p, replyCtx, content)
 }
 
 func (e *Engine) sendAlreadyRenderedWithError(p Platform, replyCtx any, content string) error {
+	return e.sendAlreadyRenderedWithContext(e.ctx, p, replyCtx, content)
+}
+
+func (e *Engine) sendAlreadyRenderedWithContext(ctx context.Context, p Platform, replyCtx any, content string) error {
 	start := time.Now()
-	if err := p.Send(e.ctx, replyCtx, content); err != nil {
+	if err := p.Send(ctx, replyCtx, content); err != nil {
 		// Check for context_token missing error (common for Weixin platform)
 		if strings.Contains(err.Error(), "missing context_token") {
 			slog.Error("platform send failed: context_token missing",

@@ -100,6 +100,13 @@ func (p *messageTriggerTestPlatform) Reply(ctx context.Context, reply any, conte
 	return p.stubPlatformEngine.Reply(ctx, reply, fmt.Sprintf("%v -> %s", reply, content))
 }
 
+func (p *messageTriggerTestPlatform) Send(ctx context.Context, reply any, content string) error {
+	if result := MessageTriggerResult(ctx); result != nil {
+		return p.Reply(ctx, result, content)
+	}
+	return p.stubPlatformEngine.Send(ctx, reply, content)
+}
+
 func (*messageTriggerTestPlatform) SetMessageTriggerGroups([]string) {}
 func (*messageTriggerTestPlatform) TriggerReplyContext(m *Message) (any, error) {
 	return "source:" + m.MessageID, nil

@@ -24,6 +24,49 @@ type messageTriggerReply struct {
 	ccUserIDs []string
 }
 
+type messageTriggerResultKey struct{}
+
+// MessageTriggerResult returns the platform reply context carrying native
+// mentions for the completed Agent response. Progress updates have no result.
+func MessageTriggerResult(ctx context.Context) any {
+	return ctx.Value(messageTriggerResultKey{})
+}
+
+func (r *messageTriggerReply) route(fallback any) any {
+	if r != nil {
+		return r.source
+	}
+	return fallback
+}
+
+func (r *messageTriggerReply) hasCC() bool {
+	return r != nil && len(r.ccUserIDs) != 0
+}
+
+func (r *messageTriggerReply) resultContext(ctx context.Context, p Platform) context.Context {
+	if r == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, messageTriggerResultKey{}, r.withCC(p))
+}
+
+func (r *messageTriggerReply) withCC(p Platform) any {
+	if len(r.ccUserIDs) == 0 {
+		return r.source
+	}
+	cc, ok := p.(messageTriggerCCPlatform)
+	if !ok {
+		slog.Warn("message trigger: platform cannot CC users", "platform", p.Name())
+		return r.source
+	}
+	result, err := cc.WithMessageTriggerCC(r.source, r.ccUserIDs)
+	if err != nil {
+		slog.Warn("message trigger: CC unavailable", "platform", p.Name(), "error", err)
+		return r.source
+	}
+	return result
+}
+
 // MessageTriggerEvent records identities from the platform event, independently of session routing.
 type MessageTriggerEvent struct {
 	ChatID           string
@@ -215,23 +258,13 @@ func (e *Engine) prepareMessageTrigger(p Platform, msg *Message) (*MessageTrigge
 	return rule, false
 }
 
-func (e *Engine) replyToMessageTrigger(p Platform, reply *messageTriggerReply, content, footer, workspaceDir string) {
-	content = e.renderOutgoingContentForWorkspace(p, appendReplyFooter(content, footer), workspaceDir)
+func (e *Engine) replyToMessageTrigger(p Platform, reply *messageTriggerReply, content, workspaceDir string) {
+	content = e.renderOutgoingContentForWorkspace(p, content, workspaceDir)
 	chunks := SplitMessageCodeFenceAware(content, maxPlatformMessageLen)
 	for i, chunk := range chunks {
 		source := reply.source
-		if i == len(chunks)-1 && len(reply.ccUserIDs) > 0 {
-			cc, supported := p.(messageTriggerCCPlatform)
-			if supported {
-				routed, err := cc.WithMessageTriggerCC(source, reply.ccUserIDs)
-				if err == nil {
-					source = routed
-				} else {
-					slog.Warn("message trigger: CC unavailable", "project", e.name, "platform", p.Name(), "error", err)
-				}
-			} else {
-				slog.Warn("message trigger: platform cannot CC users", "project", e.name, "platform", p.Name())
-			}
+		if i == len(chunks)-1 {
+			source = reply.withCC(p)
 		}
 		if err := e.replyWithError(p, source, chunk); err != nil {
 			return

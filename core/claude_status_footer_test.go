@@ -332,8 +332,8 @@ func (p *stubFooterSendingPlatform) SendWithStatusFooter(_ context.Context, _ an
 
 func TestSendChunksWithStatusFooter_RoutesToFooterSender(t *testing.T) {
 	p := &stubFooterSendingPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
-	send := func(pl Platform, rctx any, content string) error {
-		return pl.Send(context.Background(), rctx, content)
+	send := func(ctx context.Context, pl Platform, rctx any, content string) error {
+		return pl.Send(ctx, rctx, content)
 	}
 	ok := sendChunksWithStatusFooter(context.Background(), p, "ctx", "hello body", "model · ctx 5%", send)
 	if !ok {
@@ -353,8 +353,8 @@ func TestSendChunksWithStatusFooter_RoutesToFooterSender(t *testing.T) {
 
 func TestSendChunksWithStatusFooter_FallsBackInlineWhenFooterSenderFails(t *testing.T) {
 	p := &stubFooterSendingPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, failFooter: true}
-	send := func(pl Platform, rctx any, content string) error {
-		return pl.Send(context.Background(), rctx, content)
+	send := func(ctx context.Context, pl Platform, rctx any, content string) error {
+		return pl.Send(ctx, rctx, content)
 	}
 	ok := sendChunksWithStatusFooter(context.Background(), p, "ctx", "hello body", "model · ctx 5%", send)
 	if !ok {
@@ -375,8 +375,8 @@ func TestSendChunksWithStatusFooter_FallsBackInlineWhenFooterSenderFails(t *test
 
 func TestSendChunksWithStatusFooter_NoFooter(t *testing.T) {
 	p := &stubFooterSendingPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
-	send := func(pl Platform, rctx any, content string) error {
-		return pl.Send(context.Background(), rctx, content)
+	send := func(ctx context.Context, pl Platform, rctx any, content string) error {
+		return pl.Send(ctx, rctx, content)
 	}
 	ok := sendChunksWithStatusFooter(context.Background(), p, "ctx", "hello body", "", send)
 	if !ok {
@@ -395,8 +395,8 @@ func TestSendChunksWithStatusFooter_PlatformWithoutFooterSender(t *testing.T) {
 	// stubPlatformEngine does NOT implement StatusFooterSender → must fall
 	// through to inline appendReplyFooter on the last chunk.
 	p := &stubPlatformEngine{n: "test"}
-	send := func(pl Platform, rctx any, content string) error {
-		return pl.Send(context.Background(), rctx, content)
+	send := func(ctx context.Context, pl Platform, rctx any, content string) error {
+		return pl.Send(ctx, rctx, content)
 	}
 	ok := sendChunksWithStatusFooter(context.Background(), p, "ctx", "hello body", "model · ctx 5%", send)
 	if !ok {

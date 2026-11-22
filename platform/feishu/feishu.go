@@ -125,14 +125,15 @@ func init() {
 }
 
 type replyContext struct {
-	messageID        string
-	chatID           string
-	sessionKey       string
-	bootstrapThread  bool
-	receiptEmoji     string // persistent reaction owned by the accepted-message callback
-	receiptMessageID string
-	triggerMention   string // native Feishu at tag, on the final trigger reply context only
-	triggerCC        string // native cc mentions on the last chunk of a trigger result
+	messageID         string
+	chatID            string
+	sessionKey        string
+	bootstrapThread   bool
+	receiptEmoji      string // persistent reaction owned by the accepted-message callback
+	receiptMessageID  string
+	triggerSenderID   string // a trigger reply always quotes the source message
+	triggerSenderName string
+	triggerCCIDs      []string // validated IDs on the last chunk of a trigger result
 	// receiveIDType selects which Feishu ID space chatID belongs to:
 	// "" or "chat_id" (default), "open_id", "union_id".
 	receiveIDType string
@@ -717,6 +718,10 @@ func (p *Platform) getBotOpenID() string {
 }
 
 func (p *Platform) KeepPreviewOnFinish() bool {
+	return p.useInteractiveCard
+}
+
+func (p *Platform) RichCardsEnabled() bool {
 	return p.useInteractiveCard
 }
 
@@ -3938,17 +3943,13 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 	if !ok {
 		return fmt.Errorf("%s: invalid reply context type %T", p.tag(), rctx)
 	}
-	if rc.triggerMention != "" {
+	if rc.triggerSenderID != "" {
 		return p.replyToTrigger(ctx, rc, content)
 	}
 
 	content = p.resolveMentionsInContent(ctx, rc.chatID, content)
 	msgType, msgBody := buildReplyContent(content)
-
-	if !p.shouldUseThreadOrReplyAPI(rc) {
-		return p.sendNewMessageToChat(ctx, rc, msgType, msgBody)
-	}
-	return p.replyMessage(ctx, rc, msgType, msgBody)
+	return p.sendReplyContent(ctx, rc, msgType, msgBody)
 }
 
 // Send sends a message. When the original message ID is available, the message
@@ -3960,13 +3961,35 @@ func (p *Platform) Send(ctx context.Context, rctx any, content string) error {
 		return fmt.Errorf("%s: invalid reply context type %T", p.tag(), rctx)
 	}
 
-	if p.shouldUseThreadOrReplyAPI(rc) {
-		return p.Reply(ctx, rctx, content)
-	}
-
 	content = p.resolveMentionsInContent(ctx, rc.chatID, content)
 	msgType, msgBody := buildReplyContent(content)
-	return p.sendNewMessageToChat(ctx, rc, msgType, msgBody)
+	if msgType == larkim.MsgTypeInteractive {
+		var err error
+		msgBody, err = withTriggerCardResult(ctx, msgBody)
+		if err != nil {
+			return err
+		}
+	} else if result, ok := core.MessageTriggerResult(ctx).(replyContext); ok && result.triggerSenderID != "" {
+		if msgType == larkim.MsgTypePost {
+			msgBody = buildPostMdJSONWithMentions(content, result.triggerSenderID, result.triggerCCIDs)
+		} else {
+			msgType, msgBody = buildReplyContent(result.triggerResultText(content))
+		}
+	}
+	return p.sendReplyContent(ctx, rc, msgType, msgBody)
+}
+
+// SendRichCard sends a complete card built by BuildRichCard.
+func (p *interactivePlatform) SendRichCard(ctx context.Context, rctx any, card string) error {
+	rc, ok := rctx.(replyContext)
+	if !ok {
+		return fmt.Errorf("%s: invalid reply context type %T", p.tag(), rctx)
+	}
+	card, err := withTriggerCardResult(ctx, card)
+	if err != nil {
+		return err
+	}
+	return p.sendReplyContent(ctx, rc, larkim.MsgTypeInteractive, card)
 }
 
 // SendWithStatusFooter implements core.StatusFooterSender: send a reply with
@@ -3990,11 +4013,18 @@ func (p *Platform) SendWithStatusFooter(ctx context.Context, rctx any, content, 
 	}
 	processedBody := sanitizeMarkdownURLs(preprocessFeishuMarkdown(content))
 	processedFooter := sanitizeMarkdownURLs(preprocessFeishuMarkdown(footer))
-	cardJSON := buildCardJSONWithStatusFooter(processedBody, processedFooter)
-	if p.shouldUseThreadOrReplyAPI(rc) {
-		return p.replyMessage(ctx, rc, larkim.MsgTypeInteractive, cardJSON)
+	cardJSON, err := withTriggerCardResult(ctx, buildCardJSONWithStatusFooter(processedBody, processedFooter))
+	if err != nil {
+		return err
 	}
-	return p.sendNewMessageToChat(ctx, rc, larkim.MsgTypeInteractive, cardJSON)
+	return p.sendReplyContent(ctx, rc, larkim.MsgTypeInteractive, cardJSON)
+}
+
+func (p *Platform) sendReplyContent(ctx context.Context, rc replyContext, msgType, content string) error {
+	if p.shouldUseThreadOrReplyAPI(rc) {
+		return p.replyMessage(ctx, rc, msgType, content)
+	}
+	return p.sendNewMessageToChat(ctx, rc, msgType, content)
 }
 
 func (p *Platform) SendImage(ctx context.Context, rctx any, img core.ImageAttachment) error {
@@ -4259,15 +4289,27 @@ func countMarkdownTables(s string) int {
 // buildPostMdJSON builds a Feishu post message using the md tag,
 // which renders markdown at normal chat font size.
 func buildPostMdJSON(content string) string {
-	content = sanitizeMarkdownURLs(content)
+	return buildPostMdJSONWithMentions(content, "", nil)
+}
+
+func buildPostMdJSONWithMentions(content, senderID string, ccIDs []string) string {
+	var lines [][]map[string]any
+	if senderID != "" {
+		lines = append(lines, []map[string]any{{"tag": "at", "user_id": senderID}})
+	}
+	lines = append(lines, []map[string]any{{"tag": "md", "text": sanitizeMarkdownURLs(content)}})
+	if len(ccIDs) != 0 {
+		cc := []map[string]any{{"tag": "text", "text": "cc "}}
+		for _, id := range ccIDs {
+			if len(cc) > 1 {
+				cc = append(cc, map[string]any{"tag": "text", "text": " "})
+			}
+			cc = append(cc, map[string]any{"tag": "at", "user_id": id})
+		}
+		lines = append(lines, cc)
+	}
 	post := map[string]any{
-		"zh_cn": map[string]any{
-			"content": [][]map[string]any{
-				{
-					{"tag": "md", "text": content},
-				},
-			},
-		},
+		"zh_cn": map[string]any{"content": lines},
 	}
 	b, _ := json.Marshal(post)
 	return string(b)
@@ -4842,7 +4884,7 @@ func (p *Platform) shouldUseThreadOrReplyAPI(rc replyContext) bool {
 	if rc.messageID == "" {
 		return false
 	}
-	return !p.noReplyToTrigger
+	return rc.triggerSenderID != "" || !p.noReplyToTrigger
 }
 
 func (p *Platform) sendNewMessageToChat(ctx context.Context, rc replyContext, msgType, content string) error {
@@ -6143,16 +6185,7 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 		}
 		cardJSON = buildCardJSON(sanitizeMarkdownURLs(processed))
 	}
-	// Route card-entity-bound messages to cardkit-v1 full-card update API.
-	// Im.Message.Patch on entity-referenced messages is silently no-op for the
-	// card body / header — only inline card JSON messages can be patched that way.
-	h.mu.Lock()
-	cardID := h.cardID
-	h.mu.Unlock()
-	if cardID != "" {
-		return p.updateCardEntity(ctx, h, cardJSON)
-	}
-	return p.patchCardMessage(ctx, h.messageID, cardJSON)
+	return p.updatePreviewCard(ctx, h, cardJSON)
 }
 
 // UpdateMessageWithStatusFooter implements core.StatusFooterUpdater: edit an
@@ -6175,9 +6208,22 @@ func (p *Platform) UpdateMessageWithStatusFooter(ctx context.Context, previewHan
 	// resolve since the matching Send path resolves on the chat-thread API.
 	processedBody := sanitizeMarkdownURLs(preprocessFeishuMarkdown(content))
 	processedFooter := sanitizeMarkdownURLs(preprocessFeishuMarkdown(footer))
-	cardJSON := buildCardJSONWithStatusFooter(processedBody, processedFooter)
-	// Same card-entity routing as UpdateMessage above.
+	return p.updatePreviewCard(ctx, h, buildCardJSONWithStatusFooter(processedBody, processedFooter))
+}
+
+func (p *Platform) updatePreviewCard(ctx context.Context, h *feishuPreviewHandle, cardJSON string) error {
+	cardJSON, err := withTriggerCardResult(ctx, cardJSON)
+	if err != nil {
+		return err
+	}
+	// CardKit entities must be updated through CardKit; patching their message
+	// does not affect the card body or header.
 	h.mu.Lock()
+	if result, ok := core.MessageTriggerResult(ctx).(replyContext); ok && result.triggerSenderID != "" {
+		// A deferred preview status must not replace the final card with the
+		// progress body, which has no trigger mentions.
+		h.lastContent = ""
+	}
 	cardID := h.cardID
 	h.mu.Unlock()
 	if cardID != "" {
