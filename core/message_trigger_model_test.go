@@ -319,7 +319,7 @@ func TestMessageTriggerIntentConfirmationRunsOnlyAfterApproval(t *testing.T) {
 		Groups: []MessageTriggerGroup{{Match: "and", Conditions: []MessageTriggerCondition{{Type: "group", Values: []string{"group"}}}}},
 	}}, MessageTriggerModel{BaseURL: server.URL, Model: "classifier-fixture"})
 
-	message := messageTriggerTestMessage(platform, "release", original, false)
+	message := messageTriggerTestMessage(platform, "release", original, true)
 	message.ExtraContent = "The request quotes a prior launch plan"
 	session := engine.sessions.GetOrCreateActive(message.SessionKey)
 	session.AddHistory("user", "Let us stage a release")

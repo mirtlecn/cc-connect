@@ -41,20 +41,29 @@ func (p *Platform) triggerEvent(msg *models.Message) *core.MessageTriggerEvent {
 	selected := slices.Contains(p.messageTriggerGroups, chatID)
 	self := p.selfUser
 	p.mu.RUnlock()
-	if !selected || telegramReplyToBot(msg, self) {
+	if !selected {
 		return nil
 	}
-	body := msg.Text
-	if body == "" {
-		body = msg.Caption
-	}
+	body, entities := messageTextAndEntities(msg)
 	ids, complete := telegramMessageMentions(msg)
-	event := &core.MessageTriggerEvent{
-		ChatID: chatID, SenderIDs: telegramUserIDs(msg.From), MentionedIDs: ids, Body: body,
-		BotMentionKnown: complete && self != nil && self.ID > 0 && self.Username != "",
+	directMention := telegramMentionsBot(ids, self)
+	if directMention {
+		body = strings.TrimSpace(renderMessageText(body, entities, self, false))
+	} else if telegramReplyToBot(msg, self) {
+		return nil
 	}
-	event.DirectBotMention = telegramMentionsBot(ids, self)
-	return event
+	return &core.MessageTriggerEvent{
+		ChatID: chatID, SenderIDs: telegramUserIDs(msg.From), MentionedIDs: ids, Body: body,
+		BotMentionKnown:  complete && self != nil && self.ID > 0 && self.Username != "",
+		DirectBotMention: directMention,
+	}
+}
+
+func messageTextAndEntities(msg *models.Message) (string, []models.MessageEntity) {
+	if msg.Text == "" {
+		return msg.Caption, msg.CaptionEntities
+	}
+	return msg.Text, msg.Entities
 }
 
 func telegramUserIDs(user *models.User) []string {

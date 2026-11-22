@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chenhg5/cc-connect/core"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
@@ -18,6 +19,8 @@ func TestFeishuMessageTriggers_GroupHistoryAndOriginalSession(t *testing.T) {
 	messages := make(chan *core.Message, 3)
 	p := newGroupHistoryTestPlatform(func(_ core.Platform, msg *core.Message) { messages <- msg })
 	p.shareSessionInChannel = true
+	p.inboundCoalesceWindow = time.Hour
+	t.Cleanup(p.flushInboundCoalesced)
 	p.SetMessageTriggerGroups([]string{"oc_allowed"})
 	sendGroupHistoryText(t, p, "om_ordinary", "ou_alice", "earlier ordinary message", "oc_allowed", "", false)
 	first := awaitGroupHistoryMessage(t, messages)

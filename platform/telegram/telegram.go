@@ -636,11 +636,17 @@ func (p *Platform) dispatchMessage(msg *core.Message, tgMsg *models.Message) {
 	if locText := enrichLocation(msg); locText != "" {
 		extras = append(extras, locText)
 	}
-	// Inline text_link entities: rewrite "label" → "[label](url)" so the agent
-	// receives the URL. Telegram drops the href when forwarding plain text (#1207).
-	msg.Content = enrichTextLinks(msg.Content, tgMsg.Entities)
-	if tgMsg.Caption != "" {
-		msg.Content = enrichTextLinks(msg.Content, tgMsg.CaptionEntities)
+	if msg.Trigger != nil && msg.Trigger.DirectBotMention {
+		p.mu.RLock()
+		self := p.selfUser
+		p.mu.RUnlock()
+		body, entities := messageTextAndEntities(tgMsg)
+		msg.Content = strings.TrimSpace(renderMessageText(body, entities, self, true))
+	} else {
+		msg.Content = renderMessageText(msg.Content, tgMsg.Entities, nil, true)
+		if tgMsg.Caption != "" {
+			msg.Content = renderMessageText(msg.Content, tgMsg.CaptionEntities, nil, true)
+		}
 	}
 	if len(extras) > 0 {
 		msg.ExtraContent = strings.Join(extras, "\n")
@@ -2082,34 +2088,35 @@ func extractEntityText(text string, offsetUTF16, lengthUTF16 int) string {
 	return string(utf16.Decode(encoded[offsetUTF16:endUTF16]))
 }
 
-// enrichTextLinks rewrites text_link entities in-place: each entity that carries
-// a URL (type "text_link") is rewritten from "label" to "[label](url)" so the
-// agent receives the full hyperlink. Plain "url" entities (bare URLs in the
-// text) are left unchanged — they are already visible. (#1207)
-func enrichTextLinks(text string, entities []models.MessageEntity) string {
+// renderMessageText uses original UTF-16 offsets for both removing bot mentions
+// and expanding text links into Markdown.
+func renderMessageText(text string, entities []models.MessageEntity, stripBot *models.User, expandLinks bool) string {
 	if len(entities) == 0 || text == "" {
 		return text
 	}
-	// Work in UTF-16 code units (Telegram's coordinate system).
-	runes := []rune(text)
-	utf16Encoded := utf16.Encode(runes)
+	utf16Encoded := utf16.Encode([]rune(text))
 
-	// Collect text_link replacements sorted by descending offset so we can
-	// safely apply them right-to-left without shifting earlier offsets.
 	type replacement struct {
-		start, end int // UTF-16 code unit offsets
-		url        string
+		start, end int
+		value      []uint16
 	}
 	var repls []replacement
 	for _, e := range entities {
-		if e.Type != models.MessageEntityTypeTextLink || e.URL == "" {
+		if e.Offset < 0 || e.Offset >= len(utf16Encoded) || e.Length <= 0 || e.Length > len(utf16Encoded)-e.Offset {
 			continue
 		}
 		end := e.Offset + e.Length
-		if e.Offset < 0 || e.Length <= 0 || end > len(utf16Encoded) {
-			continue
+		switch {
+		case stripBot != nil && e.Type == models.MessageEntityTypeMention &&
+			strings.EqualFold(string(utf16.Decode(utf16Encoded[e.Offset:end])), "@"+stripBot.Username):
+			repls = append(repls, replacement{start: e.Offset, end: end})
+		case stripBot != nil && e.Type == models.MessageEntityTypeTextMention && e.User != nil && e.User.ID == stripBot.ID:
+			repls = append(repls, replacement{start: e.Offset, end: end})
+		case expandLinks && e.Type == models.MessageEntityTypeTextLink && e.URL != "":
+			label := string(utf16.Decode(utf16Encoded[e.Offset:end]))
+			link := fmt.Sprintf("[%s](%s)", label, e.URL)
+			repls = append(repls, replacement{start: e.Offset, end: end, value: utf16.Encode([]rune(link))})
 		}
-		repls = append(repls, replacement{e.Offset, end, e.URL})
 	}
 	if len(repls) == 0 {
 		return text
@@ -2122,12 +2129,13 @@ func enrichTextLinks(text string, entities []models.MessageEntity) string {
 			}
 		}
 	}
-	// Apply substitutions on the UTF-16 slice and rebuild.
+	// Edits to the right preserve coordinates for disjoint entities on the left.
+	right := len(utf16Encoded)
 	for _, r := range repls {
-		label := string(utf16.Decode(utf16Encoded[r.start:r.end]))
-		markdown := fmt.Sprintf("[%s](%s)", label, r.url)
-		replacement16 := utf16.Encode([]rune(markdown))
-		utf16Encoded = append(utf16Encoded[:r.start], append(replacement16, utf16Encoded[r.end:]...)...)
+		if r.end <= right {
+			utf16Encoded = append(utf16Encoded[:r.start], append(r.value, utf16Encoded[r.end:]...)...)
+			right = r.start
+		}
 	}
 	return string(utf16.Decode(utf16Encoded))
 }

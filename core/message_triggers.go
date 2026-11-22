@@ -155,17 +155,22 @@ func (e *Engine) applyMessageTriggers(rules []MessageTriggerRule, model MessageT
 	}
 }
 
-func (e *Engine) matchMessageTrigger(p Platform, msg *Message, at time.Time, evaluateIntent bool) (*MessageTriggerRule, bool) {
+func (e *Engine) canMatchMessageTrigger(msg *Message) bool {
 	event := msg.Trigger
-	state := e.messageTriggers.config.Load()
-	if event == nil || state == nil || !event.BotMentionKnown || event.DirectBotMention ||
+	if event == nil || !event.BotMentionKnown ||
 		event.ChatID == "" || msg.MessageID == "" || msg.IsPermissionResponse {
-		return nil, false
+		return false
 	}
 	text := strings.TrimSpace(event.Body)
-	if text == "" || strings.HasPrefix(text, "/") || strings.HasPrefix(text, "!") || e.matchBannedWord(text) != "" {
+	return text != "" && !strings.HasPrefix(text, "/") && !strings.HasPrefix(text, "!") && e.matchBannedWord(text) == ""
+}
+
+func (e *Engine) matchMessageTrigger(p Platform, msg *Message, at time.Time, evaluateIntent bool) (*MessageTriggerRule, bool) {
+	state := e.messageTriggers.config.Load()
+	if state == nil || !e.canMatchMessageTrigger(msg) {
 		return nil, false
 	}
+	event := msg.Trigger
 
 	claimed := false
 	var ctx context.Context
@@ -272,11 +277,11 @@ func (e *Engine) triggerIntentImages(msg *Message, protocol string) (string, []I
 }
 
 func (e *Engine) mayEvaluateMessageIntent(p Platform, msg *Message, at time.Time) bool {
-	event := msg.Trigger
 	state := e.messageTriggers.config.Load()
-	if event == nil || state == nil || !event.BotMentionKnown || event.DirectBotMention {
+	if state == nil || !e.canMatchMessageTrigger(msg) {
 		return false
 	}
+	event := msg.Trigger
 	for i := len(state.rules) - 1; i >= 0; i-- {
 		rule := state.rules[i]
 		if rule.watches(p.Name(), event.ChatID) && rule.matchesGroups(event, at) {

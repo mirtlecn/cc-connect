@@ -190,7 +190,7 @@ func TestMessageTriggerAdminConfirmationAndShell(t *testing.T) {
 	rule.CCEnabled = true
 	rule.CCUserIDs = []string{"one", "two"}
 	e.SetMessageTriggers([]MessageTriggerRule{rule}, MessageTriggerModel{})
-	e.ReceiveMessage(p, messageTriggerTestMessage(p, "approve", "run task; printf bypass", false))
+	e.ReceiveMessage(p, messageTriggerTestMessage(p, "approve", "run task; printf bypass", true))
 	approved := p.readCard(t)
 	if _, resolved := p.confirm(approved.id, "group", "admin", true); !resolved {
 		t.Fatal("admin could not approve")

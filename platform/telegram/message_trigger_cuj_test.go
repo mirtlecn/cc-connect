@@ -100,6 +100,23 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 			return nil
 		}
 	}
+	awaitIdle := func() {
+		t.Helper()
+		// The mock records a request before writing its HTTP response.
+		// Wait until the turn has finished before sending the next input.
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			busy := false
+			for _, session := range engine.GetSessions().AllSessions() {
+				busy = busy || session.Busy()
+			}
+			if !busy {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatal("Telegram agent turn did not finish")
+	}
 	assertSourceReaction := func(messageID, emoji string) {
 		t.Helper()
 		fields := await("setMessageReaction")
@@ -119,6 +136,30 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 		if fields.Get("chat_id") != "-100" || fields.Get("message_thread_id") != "55" || reply.MessageID != originalID {
 			t.Fatalf("wrong original reply location: %v", fields)
 		}
+	}
+	assertTriggeredResult := func(fields url.Values, originalID int) {
+		t.Helper()
+		assertReplyDestination(fields, originalID)
+		text := fields.Get("text")
+		if fields.Get("parse_mode") != string(models.ParseModeHTML) ||
+			strings.Count(text, "tg://user?id=") != 3 ||
+			!strings.Contains(text, `<a href="tg://user?id=7">@alice</a>`) ||
+			!strings.Contains(text, "Fixture result") ||
+			!strings.HasSuffix(text, `cc <a href="tg://user?id=10">@10</a> <a href="tg://user?id=11">@11</a>`) {
+			t.Fatalf("trigger reply lost the original sender or configured cc mentions: %v", fields)
+		}
+	}
+	assertOrdinaryTurn := func(input string) {
+		t.Helper()
+		fields := await("sendMessage")
+		text := fields.Get("text")
+		if fields.Get("reply_markup") != "" || !strings.Contains(text, "Fixture result") || strings.Contains(text, "tg://user?id=") {
+			t.Fatalf("ordinary agent reply was captured by the rule: %v", fields)
+		}
+		if prompt := <-agent.prompts; strings.Contains(prompt, "Configured instruction") || !strings.Contains(prompt, input) {
+			t.Fatalf("ordinary agent prompt for %q = %q", input, prompt)
+		}
+		awaitIdle()
 	}
 	readConfirmButtons := func(fields url.Values, originalID int) []models.InlineKeyboardButton {
 		t.Helper()
@@ -187,53 +228,53 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 	if edit := await("editMessageText"); edit.Get("reply_markup") != `{"inline_keyboard":[]}` || strings.Contains(edit.Get("text"), "@8") {
 		t.Fatalf("approval left active buttons or repeated mentions: %v", edit)
 	}
-	result := await("sendMessage")
-	assertReplyDestination(result, 102)
-	if result.Get("parse_mode") != string(models.ParseModeHTML) ||
-		strings.Count(result.Get("text"), "tg://user?id=") != 3 ||
-		!strings.Contains(result.Get("text"), `<a href="tg://user?id=7">@alice</a>`) ||
-		!strings.Contains(result.Get("text"), "Fixture result") ||
-		!strings.HasSuffix(result.Get("text"), `cc <a href="tg://user?id=10">@10</a> <a href="tg://user?id=11">@11</a>`) {
-		t.Fatalf("trigger reply lost the original sender or configured cc mentions: %v", result)
-	}
+	assertTriggeredResult(await("sendMessage"), 102)
 	if prompt := <-agent.prompts; !strings.Contains(prompt, "Configured instruction") ||
 		!strings.Contains(prompt, "[deploy](https://example.test/runbook) approved") {
 		t.Fatalf("agent prompt = %q", prompt)
 	}
+	awaitIdle()
 	click(8, secondButtons[0], second)
 	if text := await("answerCallbackQuery").Get("text"); !strings.Contains(text, "no longer pending") || len(requests["editMessageText"]) != 0 {
 		t.Fatalf("duplicate approval changed the resolved card: %q", text)
 	}
 
-	const directText = "deploy via direct mention "
-	send(103, directText+"@testbot", models.MessageEntity{Type: models.MessageEntityTypeMention, Offset: len(directText), Length: len("@testbot")})
-	direct := await("sendMessage")
-	if direct.Get("reply_markup") != "" || !strings.Contains(direct.Get("text"), "Fixture result") || strings.Contains(direct.Get("text"), "\ncc ") {
-		t.Fatalf("direct @bot path was captured by the rule: %v", direct)
+	rule.Confirm = false
+	rule.Groups[0].Conditions[1].Value = `^(deploy\b|/status\b)`
+	engine.SetMessageTriggers([]core.MessageTriggerRule{rule}, core.MessageTriggerModel{})
+	mentionBot := func(id int, text string) {
+		const mention = "@TESTBOT"
+		send(id, mention+" "+text, models.MessageEntity{Type: models.MessageEntityTypeMention, Length: len(mention)})
 	}
-	if prompt := <-agent.prompts; strings.Contains(prompt, "Configured instruction") || !strings.Contains(prompt, "deploy via direct mention") {
-		t.Fatalf("direct @bot agent prompt = %q", prompt)
+	mentionBot(103, "deploy via direct mention")
+	assertTriggeredResult(await("sendMessage"), 103)
+	if prompt := <-agent.prompts; !strings.HasPrefix(prompt, "Configured instruction\n\ndeploy via direct mention") {
+		t.Fatalf("matched direct @bot agent prompt = %q", prompt)
 	}
+	awaitIdle()
+
+	mentionBot(104, "ordinary direct mention")
+	assertOrdinaryTurn("ordinary direct mention")
+
+	p.processUpdate(ctx, &models.Update{Message: &models.Message{
+		ID: 105, Date: int(time.Now().Unix()), Chat: chat, MessageThreadID: 55, Text: "deploy in reply to bot",
+		From:           &models.User{ID: 7, Username: "alice"},
+		ReplyToMessage: &models.Message{From: p.selfUser, Text: "Previous bot answer"},
+	}})
+	assertOrdinaryTurn("deploy in reply to bot")
+
+	mentionBot(106, "/status")
+	if status := await("sendMessage"); !strings.Contains(strings.ToLower(status.Get("text")), "cc-connect status") {
+		t.Fatalf("/status bypassed the command handler: %v", status)
+	}
+
 	if starts := agent.starts.Load(); starts != 1 {
-		t.Fatalf("trigger and direct mentions should reuse one agent session, started %d", starts)
+		t.Fatalf("trigger and ordinary chat should reuse one agent session, started %d", starts)
 	}
-	// The mock records a request before writing its HTTP response; let the
-	// engine finish the send before the test cleanup cancels its context.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		busy := false
-		for _, session := range engine.GetSessions().AllSessions() {
-			busy = busy || session.Busy()
-		}
-		if !busy {
-			if len(requests["sendMessage"]) != 0 || len(agent.prompts) != 0 {
-				t.Fatal("duplicate source or approval triggered another turn")
-			}
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	awaitIdle()
+	if len(requests["sendMessage"]) != 0 || len(agent.prompts) != 0 {
+		t.Fatal("duplicate source, approval, or command triggered another agent turn")
 	}
-	t.Fatal("Telegram agent turn did not finish")
 }
 
 type rejectTelegramRichTransport struct{}

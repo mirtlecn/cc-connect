@@ -984,7 +984,7 @@ Every rule needs at least one `group` condition. The bot only watches the chats 
 
 Existing flat rules still load. Group and identity requirements become grouped conditions, and keywords become case-insensitive literal regular expressions. Legacy confirmation settings migrate to manual mode. Legacy intent conditions migrate to intent mode, with manual mode taking precedence when both were used. Saving writes the new rule structure.
 
-Rules are checked from the bottom of the list upward and stop at the first match. A direct mention of the bot follows the usual conversation flow.
+Ordinary group messages, including direct mentions of the bot, are checked against trigger rules from the bottom of the list upward. A matching rule handles the message. An unmatched direct mention starts a normal conversation turn. Slash commands still use the command handler.
 
 With `group_chat_history_share` enabled, Feishu and Lark retain and send up to 10 pending context messages per group or thread by default. Set the platform option `group_chat_history_limit` to a positive integer to change both limits. Omit it or use `0` to use 10. The three most recent messages with images can contribute up to six images in total. Older images, images beyond the limit, and failed downloads appear as `[image]`. [Feishu group context settings](./feishu.md)
 

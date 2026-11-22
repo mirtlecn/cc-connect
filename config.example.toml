@@ -1100,8 +1100,8 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # Message Triggers / 消息触发任务
 # Feishu/Lark requires im:message.group_msg. Telegram bots must receive ordinary group messages.
 # 飞书/Lark 需发布 im:message.group_msg 权限。Telegram 机器人需能接收普通群消息。
-# Rules match from bottom to top. A direct @ to the bot keeps the usual chat flow.
-# 规则从下往上匹配，首条命中生效。直接 @ 机器人走原有对话流程。
+# Rules match ordinary group messages from bottom to top, including direct bot mentions.
+# 普通群消息按规则从下往上匹配，包括直接 @ 机器人的消息。未命中的 @ 消息进入普通对话。
 # At least one group condition is required. Only chats named by those conditions are watched.
 # 至少配置一个 group 条件。机器人只监听这些条件列出的群。
 # A group condition also participates in its group's AND/OR logic.

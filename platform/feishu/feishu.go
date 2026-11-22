@@ -1555,7 +1555,7 @@ func (p *Platform) dispatchCoreMessage(msg *core.Message) {
 		// Evaluate each rule candidate against its own message ID. The engine
 		// may consult an external model, so do not hold the platform dispatch
 		// lock during the evaluation.
-		if msg.Trigger != nil && msg.Trigger.BotMentionKnown && !msg.Trigger.DirectBotMention {
+		if msg.Trigger != nil && msg.Trigger.BotMentionKnown {
 			p.flushInboundSession(msg.SessionKey)
 			p.inboundDispatchMu.Unlock()
 			p.deliverCoreMessage(msg)
