@@ -30,9 +30,13 @@ func init() {
 }
 
 type replyContext struct {
-	chatID    int64
-	threadID  int
-	messageID int
+	chatID             int64
+	threadID           int
+	messageID          int
+	triggerMentionText string
+	triggerMentionURL  string
+	triggerCC          string // rendered native mentions on the last chunk of a trigger result
+	triggerCCLength    int    // text length after Telegram parses mentions
 }
 
 // telegramBot abstracts the Telegram bot API methods for testability.
@@ -114,19 +118,22 @@ type Platform struct {
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
 
-	mu                  sync.RWMutex
-	bot                 telegramBot
-	selfUser            *models.User
-	handler             core.MessageHandler
-	lifecycleHandler    core.PlatformLifecycleHandler
-	cancel              context.CancelFunc
-	stopping            bool
-	generation          uint64
-	unavailableNotified bool
-	everConnected       bool
-	newBot              botFactory
-	newBackoffTimer     func(time.Duration) backoffTimer
-	newTypingTicker     func(time.Duration) typingTicker
+	mu                   sync.RWMutex
+	bot                  telegramBot
+	selfUser             *models.User
+	messageTriggerGroups []string // guarded by mu
+	handler              core.MessageHandler
+	lifecycleHandler     core.PlatformLifecycleHandler
+	cancel               context.CancelFunc
+	stopping             bool
+	generation           uint64
+	unavailableNotified  bool
+	everConnected        bool
+	newBot               botFactory
+	newBackoffTimer      func(time.Duration) backoffTimer
+	newTypingTicker      func(time.Duration) typingTicker
+
+	triggerConfirmationHandler func(id, chatID, userID string, approved bool) (feedback string, resolved bool) // guarded by mu
 }
 
 const (
@@ -437,22 +444,33 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 	}
 
 	chatName := ""
+	var trigger *core.MessageTriggerEvent
 	if isGroup {
 		chatName = msg.Chat.Title
-	}
-
-	if isGroup && !p.groupReplyAll {
-		slog.Debug("telegram: checking group message", "text", msg.Text, "is_command", isCommand(msg))
-		if !p.isDirectedAtBot(msg) {
-			return
+		trigger = p.triggerEvent(msg)
+		if !p.groupReplyAll && !p.isDirectedAtBot(msg) {
+			if trigger == nil || !trigger.BotMentionKnown || trigger.DirectBotMention {
+				return
+			}
+			trigger.RuleOnly = true
 		}
 	}
 
 	rctx := replyContext{chatID: msg.Chat.ID, threadID: threadID, messageID: msg.ID}
+	var onAccepted func()
 	if p.enableReactions {
-		go p.reactToMessage(ctx, msg.Chat.ID, msg.ID, "⚡")
+		chatID, messageID := msg.Chat.ID, msg.ID
+		react := func() { go p.reactToMessage(ctx, chatID, messageID, "⚡") }
+		if trigger != nil && trigger.RuleOnly {
+			onAccepted = sync.OnceFunc(react)
+		} else {
+			react()
+		}
 	}
 	botName := p.botUsername()
+	if trigger != nil && trigger.RuleOnly {
+		botName = "" // native entities already established this is not a bot mention
+	}
 
 	if msg.Dice != nil {
 		p.dispatchMessage(&core.Message{
@@ -482,6 +500,7 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 			ChannelKey: channelKey,
 			Images:     []core.ImageAttachment{{MimeType: "image/jpeg", Data: imgData}},
 			ReplyCtx:   rctx,
+			Trigger:    trigger, OnAccepted: onAccepted,
 		}, msg)
 		return
 	}
@@ -555,6 +574,7 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 			ChannelKey: channelKey,
 			Files:      []core.FileAttachment{{MimeType: msg.Document.MimeType, Data: fileData, FileName: msg.Document.FileName}},
 			ReplyCtx:   rctx,
+			Trigger:    trigger, OnAccepted: onAccepted,
 		}, msg)
 		return
 	}
@@ -591,6 +611,7 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 		MessageID:  strconv.Itoa(msg.ID),
 		ChannelKey: channelKey,
 		ReplyCtx:   rctx,
+		Trigger:    trigger, OnAccepted: onAccepted,
 	}, msg)
 }
 
@@ -877,6 +898,10 @@ func (p *Platform) handleCallbackQuery(ctx context.Context, cb *models.CallbackQ
 		slog.Debug("telegram: callback from unauthorized user", "user", userID)
 		return
 	}
+	if data, ok := strings.CutPrefix(data, triggerConfirmationPrefix); ok {
+		p.handleTriggerConfirmation(ctx, bot, cb.ID, msg, userID, data)
+		return
+	}
 
 	// Answer the callback to clear the loading indicator
 	if _, err := bot.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID}); err != nil {
@@ -1065,37 +1090,9 @@ func (p *Platform) isDirectedAtBot(msg *models.Message) bool {
 		return true // /cmd without @suffix — accept
 	}
 
-	// Non-command: check @mention
-	if msg.Entities != nil {
-		for _, e := range msg.Entities {
-			if e.Type == models.MessageEntityTypeMention {
-				mention := extractEntityText(msg.Text, e.Offset, e.Length)
-				slog.Debug("telegram: checking mention", "bot", botName, "mention", mention, "match", strings.EqualFold(mention, "@"+botName))
-				if strings.EqualFold(mention, "@"+botName) {
-					return true
-				}
-			}
-		}
-	}
-
-	// Check if replying to a message from this bot
-	if msg.ReplyToMessage != nil && msg.ReplyToMessage.From != nil {
-		slog.Debug("telegram: checking reply", "bot_id", self.ID, "reply_from_id", msg.ReplyToMessage.From.ID)
-		if msg.ReplyToMessage.From.ID == self.ID {
-			return true
-		}
-	}
-
-	// Also check caption entities (for photos with captions)
-	if msg.CaptionEntities != nil {
-		for _, e := range msg.CaptionEntities {
-			if e.Type == models.MessageEntityTypeMention {
-				mention := extractEntityText(msg.Caption, e.Offset, e.Length)
-				if strings.EqualFold(mention, "@"+botName) {
-					return true
-				}
-			}
-		}
+	ids, _ := telegramMessageMentions(msg)
+	if telegramMentionsBot(ids, self) || telegramReplyToBot(msg, self) {
+		return true
 	}
 
 	slog.Debug("telegram: ignoring group message not directed at bot", "chat", msg.Chat.ID, "bot", botName, "text", msg.Text, "entities", msg.Entities)
@@ -1266,6 +1263,9 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 	rc, ok := rctx.(replyContext)
 	if !ok {
 		return fmt.Errorf("telegram: invalid reply context type %T", rctx)
+	}
+	if rc.triggerMentionURL != "" {
+		return p.replyToTrigger(ctx, rc, content)
 	}
 
 	// Try native Telegram Bot API 10.x sendRichMessage first

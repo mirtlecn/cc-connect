@@ -52,16 +52,22 @@ type ManagementServer struct {
 	heartbeatScheduler *HeartbeatScheduler
 	bridgeServer       *BridgeServer
 
-	setupFeishuSave      func(req FeishuSetupSaveRequest) error
-	setupWeixinSave      func(req WeixinSetupSaveRequest) error
-	addPlatformToProject func(projectName, platType string, opts map[string]any, workDir, agentType string) error
-	removeProject        func(projectName string) error
-	saveProjectSettings  func(projectName string, update ProjectSettingsUpdate) error
-	getProjectConfig     func(projectName string) map[string]any
-	saveProviderRefs     func(projectName string, refs []string) error
-	configFilePath       string
-	getGlobalSettings    func() map[string]any
-	saveGlobalSettings   func(map[string]any) error
+	setupFeishuSave         func(req FeishuSetupSaveRequest) error
+	setupWeixinSave         func(req WeixinSetupSaveRequest) error
+	addPlatformToProject    func(projectName, platType string, opts map[string]any, workDir, agentType string) error
+	removeProject           func(projectName string) error
+	saveProjectSettings     func(projectName string, update ProjectSettingsUpdate) error
+	getProjectConfig        func(projectName string) map[string]any
+	saveProviderRefs        func(projectName string, refs []string) error
+	getMessageTriggers      func(string) ([]MessageTriggerRule, MessageTriggerModel, error)
+	saveMessageTriggers     func(string, string, []MessageTriggerRule) ([]MessageTriggerRule, MessageTriggerModel, error)
+	messageTriggerModelMu   sync.Mutex
+	getMessageTriggerModel  func() (MessageTriggerModel, error)
+	saveMessageTriggerModel func(MessageTriggerModel) error
+	configFilePath          string
+	redactConfig            func([]byte) ([]byte, error)
+	getGlobalSettings       func() map[string]any
+	saveGlobalSettings      func(map[string]any) error
 
 	// Global provider callbacks (set by cmd/cc-connect)
 	listGlobalProviders  func() ([]GlobalProviderInfo, error)
@@ -115,6 +121,10 @@ func (m *ManagementServer) SetConfigFilePath(path string) {
 	m.configFilePath = path
 }
 
+func (m *ManagementServer) SetConfigRedactor(redact func([]byte) ([]byte, error)) {
+	m.redactConfig = redact
+}
+
 func (m *ManagementServer) SetSaveProjectSettings(fn func(string, ProjectSettingsUpdate) error) {
 	m.saveProjectSettings = fn
 }
@@ -148,10 +158,10 @@ type GlobalProviderInfo struct {
 		Model string `json:"model"`
 		Alias string `json:"alias,omitempty"`
 	} `json:"models,omitempty"`
-	Endpoints       map[string]string              `json:"endpoints,omitempty"`
-	AgentModels     map[string]string              `json:"agent_models,omitempty"`
-	AgentModelLists map[string][]GlobalModelEntry   `json:"agent_model_lists,omitempty"`
-	Codex           *GlobalCodexConfig              `json:"codex,omitempty"`
+	Endpoints       map[string]string             `json:"endpoints,omitempty"`
+	AgentModels     map[string]string             `json:"agent_models,omitempty"`
+	AgentModelLists map[string][]GlobalModelEntry `json:"agent_model_lists,omitempty"`
+	Codex           *GlobalCodexConfig            `json:"codex,omitempty"`
 }
 
 // GlobalModelEntry is a model entry inside AgentModelLists.
@@ -223,6 +233,7 @@ func (m *ManagementServer) buildHandler(mux *http.ServeMux) http.Handler {
 	mux.HandleFunc(prefix+"/reload", m.wrap(m.handleReload))
 	mux.HandleFunc(prefix+"/config", m.wrap(m.handleConfig))
 	mux.HandleFunc(prefix+"/settings", m.wrap(m.handleGlobalSettings))
+	mux.HandleFunc(prefix+"/message-trigger-model", m.wrap(m.handleMessageTriggerModel))
 
 	// Agents & Platforms (registry)
 	mux.HandleFunc(prefix+"/agents", m.wrap(m.handleAgents))
@@ -348,7 +359,7 @@ func (m *ManagementServer) setCORS(w http.ResponseWriter, r *http.Request) {
 	for _, o := range m.corsOrigins {
 		if o == "*" || o == origin {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 			break
@@ -415,9 +426,9 @@ func (m *ManagementServer) handleStatus(w http.ResponseWriter, r *http.Request) 
 				info := ph.PlatformHealth()
 				if info.Degraded {
 					entry := map[string]any{
-						"name":    info.Name,
-						"reason":  info.DegradedReason,
-						"since":   info.DegradedSince,
+						"name":   info.Name,
+						"reason": info.DegradedReason,
+						"since":  info.DegradedSince,
 					}
 					degradedEntries = append(degradedEntries, entry)
 				}
@@ -516,6 +527,13 @@ func (m *ManagementServer) handleConfig(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		mgmtError(w, http.StatusInternalServerError, "read config: "+err.Error())
 		return
+	}
+	if m.redactConfig != nil {
+		data, err = m.redactConfig(data)
+		if err != nil {
+			mgmtError(w, http.StatusInternalServerError, "config preview could not be safely redacted")
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -649,6 +667,12 @@ func (m *ManagementServer) handleProjectRoutes(w http.ResponseWriter, r *http.Re
 		m.handleProjectHeartbeat(w, r, projName, rest)
 	case "users":
 		m.handleProjectUsers(w, r, engine)
+	case "message-triggers":
+		if rest != "" {
+			mgmtError(w, http.StatusNotFound, "not found")
+			return
+		}
+		m.handleProjectMessageTriggers(w, r, projName, engine)
 	case "workspaces":
 		m.handleProjectWorkspaces(w, r, projName, engine, rest)
 	default:
@@ -760,6 +784,10 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if body.AdminFrom != nil && m.token == "" && !isLocalTriggerManagementRequest(r) {
+			mgmtError(w, http.StatusForbidden, "updating administrators requires a management token or local same-origin access")
 			return
 		}
 		if body.WorkDir != nil {
@@ -2152,10 +2180,10 @@ func (m *ManagementServer) handleCCSwitchProviders(w http.ResponseWriter, r *htt
 // applying per-agent-type overrides for base_url, model, and models.
 func resolveGlobalProviderForAgent(g GlobalProviderInfo, agentType string) ProviderConfig {
 	pc := ProviderConfig{
-		Name:   g.Name,
-		APIKey: g.APIKey,
+		Name:    g.Name,
+		APIKey:  g.APIKey,
 		BaseURL: g.BaseURL,
-		Model:  g.Model,
+		Model:   g.Model,
 	}
 	if ep, ok := g.Endpoints[agentType]; ok && ep != "" {
 		pc.BaseURL = ep

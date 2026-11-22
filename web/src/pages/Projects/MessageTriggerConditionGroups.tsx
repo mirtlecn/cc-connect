@@ -1,0 +1,191 @@
+import { useTranslation } from 'react-i18next';
+import { Plus, Trash2 } from 'lucide-react';
+import { Button, Field, Input, Textarea, selectClassName } from '@/components/ui';
+import type { MessageTriggerCondition, MessageTriggerGroup, MessageTriggerMatch } from '@/api/messageTriggers';
+import { idListClassName, parseLines } from './MessageTriggerFields';
+
+type ConditionType = MessageTriggerCondition['type'];
+
+export const conditionLabels: Record<ConditionType, string> = {
+  group: 'messageTriggers.groups',
+  sender: 'messageTriggers.senders',
+  mentioned: 'messageTriggers.mentions',
+  regex: 'messageTriggers.regex',
+};
+
+const conditionTypes = Object.keys(conditionLabels) as ConditionType[];
+
+interface ConditionDraft {
+  id: number;
+  type: ConditionType | '';
+  text: string;
+}
+
+interface GroupDraft {
+  id: number;
+  match: MessageTriggerMatch;
+  conditions: ConditionDraft[];
+}
+
+export function createGroupDrafts(groups: MessageTriggerGroup[] | undefined): GroupDraft[] {
+  if (!groups?.length) return [{ id: 1, match: 'and', conditions: [] }];
+  return groups.map((group, index) => ({
+    id: index + 1,
+    match: group.match ?? 'and',
+    conditions: (group.conditions ?? []).map((condition, index) => ({
+      id: index + 1,
+      type: condition.type,
+      text: 'values' in condition ? (condition.values ?? []).join('\n') : condition.value ?? '',
+    })),
+  }));
+}
+
+function serializeCondition(draft: ConditionDraft): MessageTriggerCondition | undefined {
+  switch (draft.type) {
+    case 'group':
+    case 'sender':
+    case 'mentioned': {
+      const values = parseLines(draft.text);
+      return values.length ? { type: draft.type, values } : undefined;
+    }
+    case 'regex':
+      return draft.text.trim() ? { type: 'regex', value: draft.text } : undefined;
+  }
+}
+
+export function serializeGroups(groups: GroupDraft[]): MessageTriggerGroup[] | null {
+  const result: MessageTriggerGroup[] = [];
+  let hasGroupCondition = false;
+  for (const group of groups) {
+    if (!group.conditions.length) return null;
+    const conditions: MessageTriggerCondition[] = [];
+    for (const draft of group.conditions) {
+      const condition = serializeCondition(draft);
+      if (!condition) return null;
+      if (condition.type === 'group') hasGroupCondition = true;
+      conditions.push(condition);
+    }
+    result.push({ match: group.match, conditions });
+  }
+  return hasGroupCondition ? result : null;
+}
+
+function MatchSelect({ label, value, onChange }: { label: string; value: MessageTriggerMatch; onChange: (match: MessageTriggerMatch) => void }) {
+  const { t } = useTranslation();
+  return (
+    <Field label={label}>
+      <select className={selectClassName} value={value} onChange={event => onChange(event.target.value === 'or' ? 'or' : 'and')}>
+        <option value="and">{t('messageTriggers.and')}</option>
+        <option value="or">{t('messageTriggers.or')}</option>
+      </select>
+    </Field>
+  );
+}
+
+interface ConditionEditorProps {
+  condition: ConditionDraft;
+  platform: string;
+  onChange: (next: ConditionDraft) => void;
+  onRemove: () => void;
+}
+
+function ConditionEditor({ condition, platform, onChange, onRemove }: ConditionEditorProps) {
+  const { t } = useTranslation();
+  const { type, text } = condition;
+  const hints = {
+    group: t('messageTriggers.groupsHint'),
+    sender: t('messageTriggers.sendersHint'),
+    mentioned: t(platform === 'telegram' ? 'messageTriggers.mentionsTelegramHint' : 'messageTriggers.mentionsHint'),
+    regex: t('messageTriggers.regexHint'),
+  };
+
+  return (
+    <li className="space-y-3 border-t border-gray-200 pt-3 dark:border-white/10">
+      <div className="flex items-end gap-2">
+        <div className="min-w-0 flex-1">
+          <Field label={t('messageTriggers.conditionType')}>
+            <select className={selectClassName} value={type} autoFocus={type === ''} required
+              onChange={event => onChange({ ...condition, type: event.target.value as ConditionType, text: '' })}>
+              <option value="" disabled>{t('messageTriggers.selectConditionType')}</option>
+              {conditionTypes.map(type => <option key={type} value={type}>{t(conditionLabels[type])}</option>)}
+            </select>
+          </Field>
+        </div>
+        <Button type="button" variant="ghost" title={t('messageTriggers.removeCondition')} aria-label={t('messageTriggers.removeCondition')} onClick={onRemove}>
+          <Trash2 size={16} aria-hidden />
+        </Button>
+      </div>
+      {type && (
+        <Field label={t(conditionLabels[type])} hint={hints[type]}>
+          {type === 'regex' ? <Input className="font-mono" required value={text} onChange={event => onChange({ ...condition, text: event.target.value })} /> :
+            <Textarea required rows={2} wrap="off" className={idListClassName}
+              value={text} onChange={event => onChange({ ...condition, text: event.target.value })} />}
+        </Field>
+      )}
+    </li>
+  );
+}
+
+interface ConditionGroupsProps {
+  groups: GroupDraft[];
+  groupMatch: MessageTriggerMatch;
+  platform: string;
+  onGroupsChange: (groups: GroupDraft[]) => void;
+  onGroupMatchChange: (match: MessageTriggerMatch) => void;
+}
+
+export default function MessageTriggerConditionGroups({ groups, groupMatch, platform, onGroupsChange, onGroupMatchChange }: ConditionGroupsProps) {
+  const { t } = useTranslation();
+
+  function updateGroup(group: GroupDraft) {
+    onGroupsChange(groups.map(value => value.id === group.id ? group : value));
+  }
+
+  function addGroup() {
+    const id = Math.max(0, ...groups.map(group => group.id)) + 1;
+    onGroupsChange([...groups, { id, match: 'and', conditions: [] }]);
+  }
+
+  function addCondition(group: GroupDraft) {
+    const id = Math.max(0, ...group.conditions.map(condition => condition.id)) + 1;
+    updateGroup({ ...group, conditions: [...group.conditions, { id, type: '', text: '' }] });
+  }
+
+  return (
+    <div className="space-y-3 border-t border-gray-200 pt-4 dark:border-white/10">
+      <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{t('messageTriggers.conditions')}</h3>
+      <p className="text-sm text-gray-600 dark:text-gray-400">{t('messageTriggers.conditionsHint')}</p>
+      <MatchSelect label={t('messageTriggers.groupMatch')} value={groupMatch} onChange={onGroupMatchChange} />
+      {groups.map((group, index) => (
+        <fieldset key={group.id} className="min-w-0 space-y-3 rounded-lg border border-gray-200 px-4 pb-4 dark:border-white/10">
+          <legend className="px-1 text-sm font-semibold text-gray-900 dark:text-white">{t('messageTriggers.groupNumber', { number: index + 1 })}</legend>
+          <div className="flex items-end gap-2">
+            <div className="min-w-0 flex-1">
+              <MatchSelect label={t('messageTriggers.conditionMatch')} value={group.match}
+                onChange={match => updateGroup({ ...group, match })} />
+            </div>
+            <Button type="button" variant="ghost" disabled={groups.length === 1} title={t('messageTriggers.removeGroup')}
+              aria-label={t('messageTriggers.removeGroup')} onClick={() => onGroupsChange(groups.filter(value => value.id !== group.id))}>
+              <Trash2 size={16} aria-hidden />
+            </Button>
+          </div>
+          {group.conditions.length > 0 && (
+            <ol className="space-y-3">
+              {group.conditions.map(condition => (
+                <ConditionEditor key={condition.id} condition={condition} platform={platform}
+                  onChange={next => updateGroup({ ...group, conditions: group.conditions.map(value => value.id === next.id ? next : value) })}
+                  onRemove={() => updateGroup({ ...group, conditions: group.conditions.filter(value => value.id !== condition.id) })} />
+              ))}
+            </ol>
+          )}
+          <Button type="button" variant="secondary" size="sm" onClick={() => addCondition(group)}>
+            <Plus size={14} aria-hidden />{t('messageTriggers.addCondition')}
+          </Button>
+        </fieldset>
+      ))}
+      <Button type="button" variant="secondary" size="sm" onClick={addGroup}>
+        <Plus size={14} aria-hidden />{t('messageTriggers.addGroup')}
+      </Button>
+    </div>
+  );
+}

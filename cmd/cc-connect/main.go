@@ -419,6 +419,7 @@ func main() {
 		}
 
 		engine := core.NewEngine(proj.Name, agent, platforms, sessionFile, lang)
+		engine.SetMessageTriggers(proj.MessageTriggers, cfg.TriggerModel())
 		// Wire display settings including show_context_indicator and reply_footer
 		// Global [display] config can be overridden by project-level settings
 		_, _, _, _, _, showCtx, showFooter, _ := config.EffectiveDisplay(cfg, &proj)
@@ -1195,8 +1196,11 @@ func main() {
 			})
 		})
 		mgmtSrv.SetGetProjectConfig(config.GetProjectConfigDetails)
+		mgmtSrv.SetMessageTriggerConfigAccess(config.GetProjectMessageTriggers, config.SaveProjectMessageTriggers)
+		mgmtSrv.SetMessageTriggerModelAccess(config.GetMessageTriggerModel, config.SaveMessageTriggerModel)
 		mgmtSrv.SetSaveProviderRefs(config.SaveProviderRefs)
 		mgmtSrv.SetConfigFilePath(configPath)
+		mgmtSrv.SetConfigRedactor(config.RedactMessageTriggerConfig)
 		mgmtSrv.SetGetGlobalSettings(config.GetGlobalSettings)
 		mgmtSrv.SetSaveGlobalSettings(func(updates map[string]any) error {
 			u := config.GlobalSettingsUpdate{}
@@ -1816,6 +1820,11 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 	}
 	if proj == nil {
 		return nil, fmt.Errorf("project %q not found in config", projName)
+	}
+	if err := engine.ReloadMessageTriggers(func() ([]core.MessageTriggerRule, core.MessageTriggerModel, error) {
+		return config.GetProjectMessageTriggers(projName)
+	}); err != nil {
+		return nil, fmt.Errorf("reload message triggers: %w", err)
 	}
 
 	// Reload display config (includes legacy quiet → display mapping)

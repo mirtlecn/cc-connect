@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/BurntSushi/toml"
+	"github.com/chenhg5/cc-connect/core"
 )
 
 // validRunAsUserName is the portable-username character set plus digits.
@@ -88,32 +89,33 @@ type Config struct {
 	AttachmentSend string `toml:"attachment_send"`
 	// Quiet is legacy: when true and [display] does not set thinking_messages / tool_messages,
 	// engines behave as if those flags were false. Per-project quiet overrides when set.
-	Quiet              *bool                   `toml:"quiet,omitempty"`
-	Providers          []ProviderConfig        `toml:"providers"`                      // global shared providers
-	ProviderPresetsURL string                  `toml:"provider_presets_url,omitempty"` // remote JSON URL for provider presets
-	Projects           []ProjectConfig         `toml:"projects"`
-	Commands           []CommandConfig         `toml:"commands"`     // global custom slash commands
-	Aliases            []AliasConfig           `toml:"aliases"`      // global command aliases
-	BannedWords        []string                `toml:"banned_words"` // messages containing any of these words are blocked
-	Log                LogConfig               `toml:"log"`
-	Language           string                  `toml:"language"` // "en" or "zh", default is "en"
-	Speech             SpeechConfig            `toml:"speech"`
-	TTS                TTSConfig               `toml:"tts"`
-	Display            DisplayConfig           `toml:"display"`
-	StreamPreview      StreamPreviewConfig     `toml:"stream_preview"`      // real-time streaming preview
-	InstantReply       InstantReplyConfig      `toml:"instant_reply"`       // immediate confirmation reply
-	RateLimit          RateLimitConfig         `toml:"rate_limit"`          // per-session rate limiting
-	OutgoingRateLimit  OutgoingRateLimitConfig `toml:"outgoing_rate_limit"` // outgoing message throttling
-	Relay              RelayConfig             `toml:"relay"`               // bot-to-bot relay behavior
-	Cron               CronConfig              `toml:"cron"`
-	Queue              QueueConfig             `toml:"queue"`
-	Webhook            WebhookConfig           `toml:"webhook"`
-	Bridge             BridgeConfig            `toml:"bridge"`
-	Management         ManagementConfig        `toml:"management"`
-	Hooks              []HookConfig            `toml:"hooks"`
-	IdleTimeoutMins    *int                    `toml:"idle_timeout_mins,omitempty"`  // max minutes between consecutive agent events; 0 = no timeout; default 120
-	BusyTimeoutMins    *int                    `toml:"busy_timeout_mins,omitempty"`  // minutes a dead agent's session busy lock may be held before the next message breaks it; 0 = disable; default 2
-	MaxTurnTimeMins    *int                    `toml:"max_turn_time_mins,omitempty"` // absolute wall-clock cap per turn in minutes; 0 = disabled (default)
+	Quiet               *bool                     `toml:"quiet,omitempty"`
+	Providers           []ProviderConfig          `toml:"providers"`                      // global shared providers
+	ProviderPresetsURL  string                    `toml:"provider_presets_url,omitempty"` // remote JSON URL for provider presets
+	Projects            []ProjectConfig           `toml:"projects"`
+	Commands            []CommandConfig           `toml:"commands"`     // global custom slash commands
+	Aliases             []AliasConfig             `toml:"aliases"`      // global command aliases
+	BannedWords         []string                  `toml:"banned_words"` // messages containing any of these words are blocked
+	Log                 LogConfig                 `toml:"log"`
+	Language            string                    `toml:"language"` // "en" or "zh", default is "en"
+	Speech              SpeechConfig              `toml:"speech"`
+	TTS                 TTSConfig                 `toml:"tts"`
+	Display             DisplayConfig             `toml:"display"`
+	StreamPreview       StreamPreviewConfig       `toml:"stream_preview"`      // real-time streaming preview
+	InstantReply        InstantReplyConfig        `toml:"instant_reply"`       // immediate confirmation reply
+	RateLimit           RateLimitConfig           `toml:"rate_limit"`          // per-session rate limiting
+	OutgoingRateLimit   OutgoingRateLimitConfig   `toml:"outgoing_rate_limit"` // outgoing message throttling
+	Relay               RelayConfig               `toml:"relay"`               // bot-to-bot relay behavior
+	Cron                CronConfig                `toml:"cron"`
+	MessageTriggerModel *core.MessageTriggerModel `toml:"message_trigger_model,omitempty"`
+	Queue               QueueConfig               `toml:"queue"`
+	Webhook             WebhookConfig             `toml:"webhook"`
+	Bridge              BridgeConfig              `toml:"bridge"`
+	Management          ManagementConfig          `toml:"management"`
+	Hooks               []HookConfig              `toml:"hooks"`
+	IdleTimeoutMins     *int                      `toml:"idle_timeout_mins,omitempty"`  // max minutes between consecutive agent events; 0 = no timeout; default 120
+	BusyTimeoutMins     *int                      `toml:"busy_timeout_mins,omitempty"`  // minutes a dead agent's session busy lock may be held before the next message breaks it; 0 = disable; default 2
+	MaxTurnTimeMins     *int                      `toml:"max_turn_time_mins,omitempty"` // absolute wall-clock cap per turn in minutes; 0 = disabled (default)
 	// StopHookEvent selects the hook event emitted when /stop ends an agent
 	// turn. Accepted values:
 	//
@@ -509,11 +511,12 @@ type ProjectConfig struct {
 	// init flow to bind existing local directories. Default false keeps init
 	// limited to git URLs; use /workspace bind or /workspace route for explicit
 	// local bindings.
-	WorkspaceInitAllowLocalPaths *bool              `toml:"workspace_init_allow_local_paths,omitempty"`
-	Agent                        AgentConfig        `toml:"agent"`
-	Platforms                    []PlatformConfig   `toml:"platforms"`
-	Heartbeat                    HeartbeatConfig    `toml:"heartbeat"`
-	AutoCompress                 AutoCompressConfig `toml:"auto_compress"`
+	WorkspaceInitAllowLocalPaths *bool                     `toml:"workspace_init_allow_local_paths,omitempty"`
+	Agent                        AgentConfig               `toml:"agent"`
+	Platforms                    []PlatformConfig          `toml:"platforms"`
+	MessageTriggers              []core.MessageTriggerRule `toml:"message_triggers,omitempty" env:"-"`
+	Heartbeat                    HeartbeatConfig           `toml:"heartbeat"`
+	AutoCompress                 AutoCompressConfig        `toml:"auto_compress"`
 	// ResetOnIdleMins automatically rotates to a new cc-connect session after
 	// the current session has been inactive for the specified number of minutes.
 	// 0 or nil disables the behavior.
@@ -765,6 +768,9 @@ func resolveEnvValue(v reflect.Value) {
 		}
 	case reflect.Struct:
 		for i := 0; i < v.NumField(); i++ {
+			if v.Type().Field(i).Tag.Get("env") == "-" {
+				continue
+			}
 			resolveEnvValue(v.Field(i))
 		}
 	case reflect.String:
@@ -1084,6 +1090,10 @@ func (c *Config) validate() error {
 }
 
 func (c *Config) validateInternal(permissive bool) error {
+	model := c.TriggerModel()
+	if err := model.Validate(); err != nil {
+		return fmt.Errorf("config: message_trigger_model: %w", err)
+	}
 	if err := validateDisplayConfig("display", &c.Display); err != nil {
 		return err
 	}
@@ -1123,6 +1133,13 @@ func (c *Config) validateInternal(permissive bool) error {
 			if p.Type == "" {
 				return fmt.Errorf("config: %s.platforms[%d].type is required", prefix, j)
 			}
+		}
+		if proj.MessageTriggers != nil {
+			rules, err := proj.normalizeMessageTriggers(proj.MessageTriggers, model)
+			if err != nil {
+				return fmt.Errorf("config: %s: %w", prefix, err)
+			}
+			c.Projects[i].MessageTriggers = rules
 		}
 		if proj.Mode == "multi-workspace" {
 			if proj.BaseDir == "" {
@@ -3424,7 +3441,7 @@ func leadingWhitespace(s string) string {
 }
 
 func extractLineComment(line string) string {
-	inQuote := false
+	var quote byte
 	escaped := false
 	for i := 0; i < len(line); i++ {
 		ch := line[i]
@@ -3432,15 +3449,20 @@ func extractLineComment(line string) string {
 			escaped = false
 			continue
 		}
-		if ch == '\\' && inQuote {
+		if ch == '\\' && quote == '"' {
 			escaped = true
 			continue
 		}
-		if ch == '"' {
-			inQuote = !inQuote
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
 			continue
 		}
-		if ch == '#' && !inQuote {
+		switch ch {
+		case '"', '\'':
+			quote = ch
+		case '#':
 			return strings.TrimSpace(line[i:])
 		}
 	}
@@ -3792,7 +3814,10 @@ func AddPlatformToProject(projectName string, platform PlatformConfig, workDir, 
 }
 
 func writeRawConfig(content string) error {
-	content = formatTOML(content)
+	return writeConfigAtomically(formatTOML(content))
+}
+
+func writeConfigAtomically(content string) error {
 	dir := filepath.Dir(ConfigPath)
 	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
 	if err != nil {

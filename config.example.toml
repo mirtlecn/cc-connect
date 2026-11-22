@@ -4,8 +4,8 @@
 # Copy this file to config.toml and fill in your credentials.
 # 复制此文件为 config.toml，填入你的凭证信息。
 #
-# String values support ${VAR_NAME} environment variable substitution.
-# Example: token = "${TELEGRAM_BOT_TOKEN}" / 所有字符串值都支持 ${VAR_NAME} 环境变量替换。
+# String values support ${VAR_NAME} substitution unless noted otherwise.
+# Example: token = "${TELEGRAM_BOT_TOKEN}" / 除特别说明外，字符串值支持 ${VAR_NAME} 环境变量替换。
 # 例如：token = "${TELEGRAM_BOT_TOKEN}"
 #
 # Each [[projects]] entry binds one code directory to its own agent + platforms.
@@ -23,8 +23,8 @@
 # - "" (empty/not set): Auto-detect from user's first message / 留空自动检测
 # language = "en"
 
-# Shell for /shell commands, cron exec, hooks, and webhook exec.
-# /shell 命令、cron exec、hooks 和 webhook exec 使用的 shell。
+# Shell for /shell commands, cron exec, message triggers, hooks, and webhook exec.
+# /shell 命令、cron exec、消息触发任务、hooks 和 webhook exec 使用的 shell。
 # Default / 默认: "sh" (Unix) or "powershell.exe" (Windows)
 # Supported / 支持: sh, bash, zsh, fish, cmd, powershell, pwsh
 # shell = "/bin/zsh"
@@ -76,6 +76,20 @@
 
 [log]
 level = "info" # debug, info, warn, error
+
+# =============================================================================
+# Intent Matching for Message Triggers / 消息触发任务的意图判断
+# =============================================================================
+# Optional shared model for intent mode. The endpoint must support forced function calls.
+# 意图判断模式使用的共享模型。接口需支持强制调用函数工具。
+# [message_trigger_model]
+# base_url = "https://model.example.com/v1"
+# api_type = "chat_completions"    # Default / 默认. Use responses for /responses.
+# model = "your-model"
+# api_key = "your-api-key"         # Optional literal credential / 可选，直接填写密钥
+# Existing installations can still use api_key_env when api_key is empty.
+# 旧配置的 api_key_env 在未填写 api_key 时仍可使用。
+# timeout_seconds = 10             # Default 10 seconds / 默认 10 秒
 
 # =============================================================================
 # Global Providers / 全局服务商
@@ -818,6 +832,8 @@ name = "my-backend"
 # Explicit user list: only these users can run privileged commands.
 # 指定用户列表：仅这些用户可执行特权命令。
 # admin_from = "user_id_1,user_id_2"
+# An enabled message trigger with trigger_mode = "manual" needs an explicit admin ID for its platform.
+# 启用人工确认模式的规则时，需填当前渠道的显式管理员 ID。
 #
 # ⚠️ RISK WARNING / 风险提示:
 # Setting admin_from = "*" grants ALL allowed users full shell access to the host machine.
@@ -1077,6 +1093,53 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # display_path = "dirname_basename" # absolute | relative | basename | dirname_basename | smart
 # marker_style = "emoji"            # none | ascii | emoji
 # enclosure_style = "code"          # none | bracket | angle | fullwidth | code
+
+# Message Triggers / 消息触发任务
+# Feishu/Lark requires im:message.group_msg. Telegram bots must receive ordinary group messages.
+# 飞书/Lark 需发布 im:message.group_msg 权限。Telegram 机器人需能接收普通群消息。
+# Rules match from bottom to top. A direct @ to the bot keeps the usual chat flow.
+# 规则从下往上匹配，首条命中生效。直接 @ 机器人走原有对话流程。
+# At least one group condition is required. Only chats named by those conditions are watched.
+# 至少配置一个 group 条件。机器人只监听这些条件列出的群。
+# A group condition also participates in its group's AND/OR logic.
+# group 条件也参与组内的 AND/OR 判断。
+# [[projects.message_triggers]]
+# name = "Triage an incident"
+# enabled = false
+# platform = "feishu"             # feishu | lark | telegram, configured in this project / 项目已配置的渠道
+# group_match = "or"              # and | or, default or across groups / 组间默认 or
+# trigger_mode = "direct"         # direct | manual | intent / 直接执行、人工确认、意图判断
+# intent_prompt = ""              # Required in intent mode / 意图判断模式必填
+# action = "agent"                 # agent | shell
+# prompt = "Summarize the incident and ask for missing details." # Agent action only / 仅用于 Agent
+# cc_enabled = false               # Final reply only / 仅用于最终回复
+# cc_user_ids = ["ou_cc_example"]  # Feishu/Lark OpenIDs, Telegram positive numeric user IDs / 飞书或 Lark OpenID、Telegram 正整数用户 ID
+#
+# [[projects.message_triggers.groups]]
+# match = "and"                    # and | or, default and within a group / 组内默认 and
+#
+# [[projects.message_triggers.groups.conditions]]
+# type = "group"                   # group | sender | mentioned | regex
+# values = ["oc_group_example"]    # group, sender, mentioned use any matching ID / 匹配任一 ID
+#
+# [[projects.message_triggers.groups.conditions]]
+# type = "regex"
+# value = '(?i:incident|outage)'   # Go RE2 on original message text / 用 Go 正则匹配原消息正文
+#
+# [[projects.message_triggers.groups]]
+# match = "and"
+#
+# [[projects.message_triggers.groups.conditions]]
+# type = "group"
+# values = ["oc_escalations_example"]
+#
+# [[projects.message_triggers.groups.conditions]]
+# type = "sender"
+# values = ["ou_sender_example"]
+#
+# For a Shell action, use action = "shell" and command = "echo trigger-ok" in place of prompt.
+# Shell 动作使用 action = "shell" 和 command = "echo trigger-ok"，并移除 prompt。
+# Shell runs locally and replies with stdout and stderr. / 命令在本机执行，标准输出和标准错误回复到原群。
 
 # Feishu / Lark / 飞书
 # 1. Create an app at https://open.feishu.cn / 在 https://open.feishu.cn 创建应用

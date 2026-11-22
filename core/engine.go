@@ -386,6 +386,7 @@ type Engine struct {
 	configReloadFunc func() (*ConfigReloadResult, error)
 
 	hooks              *HookManager
+	messageTriggers    messageTriggerRuntime
 	cronScheduler      *CronScheduler
 	timerScheduler     *TimerScheduler
 	heartbeatScheduler *HeartbeatScheduler
@@ -544,6 +545,7 @@ type queuedMessage struct {
 	messageID         string
 	platform          Platform
 	replyCtx          any
+	triggerReplyCtx   *messageTriggerReply
 	content           string
 	images            []ImageAttachment
 	files             []FileAttachment
@@ -565,6 +567,7 @@ type interactiveState struct {
 	busySession              *Session
 	platform                 Platform
 	replyCtx                 any
+	triggerReplyCtx          *messageTriggerReply
 	currentMessageID         string
 	lastRecallProbeMessageID string
 	lastRecallProbeAt        time.Time
@@ -817,6 +820,15 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 		shell:                 defaultShell(),
 		shellFlag:             defaultShellFlag(),
 		pendingRestartTimeout: defaultPendingRestartTimeout,
+	}
+	e.messageTriggers.shells = make(chan struct{}, 4)
+	e.messageTriggers.models = make(chan struct{}, 8)
+	for _, p := range platforms {
+		if confirmer, ok := p.(MessageTriggerConfirmationPlatform); ok {
+			confirmer.SetMessageTriggerConfirmationHandler(func(id, chatID, userID string, approved bool) (string, bool) {
+				return e.resolveMessageTriggerConfirmation(p, id, chatID, userID, approved)
+			})
+		}
 	}
 
 	if ag != nil {
@@ -3017,10 +3029,39 @@ func (e *Engine) startMessageRecallMonitor(sessionKey string) context.CancelFunc
 
 func (e *Engine) handleMessage(p Platform, msg *Message) {
 	if msg.Recalled {
+		e.cancelMessageTriggerConfirmation(p, msg.MessageID)
 		e.handleMessageRecall(p, msg)
 		return
 	}
+	if e.mayEvaluateMessageIntent(p, msg) {
+		select {
+		case e.messageTriggers.models <- struct{}{}:
+			go func() {
+				defer func() { <-e.messageTriggers.models }()
+				e.handleMessageTriggerOrChat(p, msg)
+			}()
+		case <-e.ctx.Done():
+		default:
+			slog.Warn("message trigger: intent evaluation limit", "project", e.name, "platform", p.Name())
+			if !msg.Trigger.RuleOnly {
+				e.handleAcceptedMessage(p, msg, nil)
+			}
+		}
+		return
+	}
+	e.handleMessageTriggerOrChat(p, msg)
+}
 
+func (e *Engine) handleMessageTriggerOrChat(p Platform, msg *Message) {
+	trigger, drop := e.prepareMessageTrigger(p, msg)
+	if drop {
+		return
+	}
+	e.handleAcceptedMessage(p, msg, trigger)
+}
+
+func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *MessageTriggerRule) {
+	sourceContent := msg.Content
 	slog.Info("message received",
 		"platform", msg.Platform, "msg_id", msg.MessageID,
 		"session", msg.SessionKey, "user", msg.UserName,
@@ -3037,14 +3078,16 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		)
 	}
 
-	e.hooks.Emit(HookEvent{
-		Event:      HookEventMessageReceived,
-		SessionKey: msg.SessionKey,
-		Platform:   msg.Platform,
-		UserID:     msg.UserID,
-		UserName:   msg.UserName,
-		Content:    msg.Content,
-	})
+	if !msg.triggerConfirmed {
+		e.hooks.Emit(HookEvent{
+			Event:      HookEventMessageReceived,
+			SessionKey: msg.SessionKey,
+			Platform:   msg.Platform,
+			UserID:     msg.UserID,
+			UserName:   msg.UserName,
+			Content:    msg.Content,
+		})
+	}
 
 	// Voice message: transcribe to text first
 	if msg.Audio != nil {
@@ -3084,7 +3127,9 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 
 	// Resolve aliases on user text BEFORE merging ExtraContent, so reply
 	// quotes and platform context survive alias resolution (PR #420 fix).
-	content = e.resolveAlias(content)
+	if trigger == nil || (!msg.Trigger.RuleOnly && !msg.triggerConfirmed) {
+		content = e.resolveAlias(content)
+	}
 	if msg.ExtraContent != "" {
 		if content == "" {
 			msg.Content = msg.ExtraContent
@@ -3096,7 +3141,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	}
 
 	// Rate limit check (per-user role-based, then global fallback)
-	if !e.checkRateLimit(msg) {
+	if msg.triggerRateLimited || (!msg.triggerRateChecked && !e.checkRateLimit(msg)) {
 		slog.Info("message rate limited",
 			"session", msg.SessionKey, "user_id", msg.UserID, "user", msg.UserName)
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgRateLimited))
@@ -3182,64 +3227,86 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		interactiveKey = resolvedWorkspace + ":" + msg.SessionKey
 	}
 
-	if len(msg.Images) == 0 && strings.HasPrefix(content, "/") {
-		if e.handleCommand(p, msg, content) {
+	if trigger == nil || (!msg.Trigger.RuleOnly && !msg.triggerConfirmed) {
+		if len(msg.Images) == 0 && strings.HasPrefix(content, "/") {
+			if e.handleCommand(p, msg, content) {
+				return
+			}
+			// Unrecognized slash command — fall through to agent as normal message
+		}
+
+		// Permission responses bypass the session lock.
+		// Must be after workspace resolution so interactiveKey is correct.
+		var userInputHandled bool
+		questionContent := content
+		content, userInputHandled = e.handleAsyncUserInput(p, msg, content, interactiveKey, sessions)
+		if userInputHandled {
 			return
 		}
-		// Unrecognized slash command — fall through to agent as normal message
-	}
+		if content != questionContent {
+			msg.Content = content
+		}
+		if e.handlePendingPermission(p, msg, content, interactiveKey) {
+			return
+		}
 
-	// Permission responses bypass the session lock.
-	// Must be after workspace resolution so interactiveKey is correct.
-	var userInputHandled bool
-	questionContent := content
-	content, userInputHandled = e.handleAsyncUserInput(p, msg, content, interactiveKey, sessions)
-	if userInputHandled {
-		return
-	}
-	if content != questionContent {
-		msg.Content = content
-	}
-	if e.handlePendingPermission(p, msg, content, interactiveKey) {
-		return
-	}
-
-	// "!" prefix: treat as shell command (same as /shell)
-	// Placed after permission handling so "!yes" doesn't hijack permission responses.
-	if len(msg.Images) == 0 && strings.HasPrefix(content, "!") {
-		shellCmd := strings.TrimSpace(content[1:])
-		if shellCmd != "" {
-			// Check disabled / admin just like handleCommand does for "shell"
-			e.userRolesMu.RLock()
-			disabledCmds := e.disabledCmds
-			urm := e.userRoles
-			e.userRolesMu.RUnlock()
-			if urm != nil {
-				if role := urm.ResolveRole(msg.UserID); role != nil {
-					disabledCmds = role.DisabledCmds
+		// "!" prefix: treat as shell command (same as /shell)
+		// Placed after permission handling so "!yes" doesn't hijack permission responses.
+		if len(msg.Images) == 0 && strings.HasPrefix(content, "!") {
+			shellCmd := strings.TrimSpace(content[1:])
+			if shellCmd != "" {
+				// Check disabled / admin just like handleCommand does for "shell"
+				e.userRolesMu.RLock()
+				disabledCmds := e.disabledCmds
+				urm := e.userRoles
+				e.userRolesMu.RUnlock()
+				if urm != nil {
+					if role := urm.ResolveRole(msg.UserID); role != nil {
+						disabledCmds = role.DisabledCmds
+					}
 				}
-			}
-			if disabledCmds["shell"] {
-				e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCommandDisabled), "!"))
+				if disabledCmds["shell"] {
+					e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCommandDisabled), "!"))
+					return
+				}
+				if !e.isAdmin(msg.UserID) {
+					e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "!"))
+					return
+				}
+				slog.Info("audit: command_executed",
+					"user_id", msg.UserID, "platform", msg.Platform,
+					"project", e.name, "command", "shell")
+				e.cmdShell(p, msg, "/shell "+shellCmd)
 				return
 			}
-			if !e.isAdmin(msg.UserID) {
-				e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "!"))
-				return
-			}
-			slog.Info("audit: command_executed",
-				"user_id", msg.UserID, "platform", msg.Platform,
-				"project", e.name, "command", "shell")
-			e.cmdShell(p, msg, "/shell "+shellCmd)
+		}
+
+		// Pending provider add (card-driven multi-step flow)
+		if e.handlePendingProviderAdd(p, msg, content, interactiveKey) {
 			return
 		}
 	}
 
-	// Pending provider add (card-driven multi-step flow)
-	if e.handlePendingProviderAdd(p, msg, content, interactiveKey) {
-		return
+	if trigger != nil {
+		if !e.isCurrentMessageTrigger(trigger) || e.triggerSourceRecalled(p, msg.MessageID) {
+			return
+		}
+		if (trigger.TriggerMode == "manual" || msg.triggerReason != "") && !msg.triggerConfirmed {
+			msg.Content = sourceContent
+			e.requestMessageTriggerConfirmation(p, msg, trigger)
+			return
+		}
+		// Admission is ordered by match completion (or an administrator's
+		// decision), while replies still refer to the original message ID.
+		msg.UserMessageTimeMs = 0
+		if trigger.Action == "shell" {
+			e.startMessageTriggerShell(p, msg, agent, trigger)
+			return
+		}
+		if trigger.Prompt != "" {
+			msg.Content = trigger.Prompt + "\n\n" + msg.Content
+		}
 	}
-
 	if e.discardStaleUserMessageIfNeeded(interactiveKey, msg) {
 		return
 	}
@@ -3481,6 +3548,7 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 		messageID:         msg.MessageID,
 		platform:          p,
 		replyCtx:          msg.ReplyCtx,
+		triggerReplyCtx:   msg.triggerReplyCtx,
 		content:           msg.Content,
 		images:            msg.Images,
 		files:             msg.Files,
@@ -4141,6 +4209,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	}
 	state.platform = p
 	state.replyCtx = msg.ReplyCtx
+	state.triggerReplyCtx = msg.triggerReplyCtx
 	state.currentMessageID = msg.MessageID
 	state.currentTurnUserMessageTimeMs = msg.UserMessageTimeMs
 	state.mu.Unlock()
@@ -5527,6 +5596,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 	state.mu.Lock()
 	workspaceDir := state.workspaceDir
+	triggerReplyCtx := state.triggerReplyCtx
 	replyAgent := state.agent
 	if replyAgent == nil {
 		replyAgent = e.agent
@@ -5547,7 +5617,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	var cardThinkingText string        // latest thinking text
 	var cardAnswerText strings.Builder // accumulated answer text
 
-	if scp, ok := state.platform.(StreamingCardPlatform); ok {
+	if scp, ok := state.platform.(StreamingCardPlatform); ok && triggerReplyCtx == nil {
 		if sc, err := scp.CreateStreamingCard(e.ctx, state.replyCtx); err != nil {
 			slog.Warn("streaming card creation failed, falling back to normal messages", "error", err)
 		} else {
@@ -5555,7 +5625,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			slog.Info("streaming card created for turn", "session", sessionKey)
 		}
 	}
-	sp := newStreamPreview(e.streamPreview, state.platform, state.replyCtx, e.ctx, workspaceRenderer)
+	previewCfg := e.streamPreview
+	previewCfg.Enabled = previewCfg.Enabled && triggerReplyCtx == nil
+	sp := newStreamPreview(previewCfg, state.platform, state.replyCtx, e.ctx, workspaceRenderer)
 	cp := newCompactProgressWriter(e.ctx, state.platform, state.replyCtx, e.agent.Name(), e.i18n.CurrentLang(), workspaceRenderer)
 	state.mu.Unlock()
 
@@ -5725,7 +5797,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		richCardSupporter, hasRichCard := p.(RichCardSupporter)
 		// Card 2.0 rich-card path is opt-in via [display] mode = "rich".
 		// Default "legacy" keeps upstream behavior for all platforms.
-		if e.display.CardMode != "rich" {
+		if e.display.CardMode != "rich" || triggerReplyCtx != nil {
 			hasRichCard = false
 		}
 		richMarkdownResolver, hasRichMarkdownResolver := p.(RichCardMarkdownResolver)
@@ -5793,7 +5865,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// When thinking messages are hidden, behavior depends on display mode:
 			//   quiet:   append separator to keep all text in one card
 			//   compact: freeze+detach to split text into separate cards
-			if !e.display.ThinkingMessages && len(textParts) > segmentStart {
+			if triggerReplyCtx == nil && !e.display.ThinkingMessages && len(textParts) > segmentStart {
 				if e.display.Mode == "quiet" {
 					if sp.canPreview() && sp.appendSeparator("\n\n") {
 						textParts = append(textParts, "\n\n")
@@ -5824,7 +5896,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// --- Original path (fallback) ---
 				// Flush accumulated text segment before thinking display
 				previewActive := sp.canPreview()
-				if len(textParts) > segmentStart {
+				if triggerReplyCtx == nil && len(textParts) > segmentStart {
 					if !previewActive {
 						segment := strings.Join(textParts[segmentStart:], "")
 						if segment != "" {
@@ -5880,7 +5952,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// When tool messages are hidden, behavior depends on display mode:
 			//   quiet:   append separator to keep all text in one card
 			//   compact: freeze+detach to split text into separate cards
-			if !e.display.ToolMessages && len(textParts) > segmentStart {
+			if triggerReplyCtx == nil && !e.display.ToolMessages && len(textParts) > segmentStart {
 				if e.display.Mode == "quiet" {
 					if sp.canPreview() && sp.appendSeparator("\n\n") {
 						textParts = append(textParts, "\n\n")
@@ -5932,7 +6004,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// --- Original path (fallback) ---
 				// Flush accumulated text segment before tool display
 				previewActive := sp.canPreview()
-				if len(textParts) > segmentStart {
+				if triggerReplyCtx == nil && len(textParts) > segmentStart {
 					if !previewActive {
 						segment := strings.Join(textParts[segmentStart:], "")
 						if segment != "" {
@@ -6028,6 +6100,12 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			content := event.Content
 			if e.display.HideAgentFooter {
 				content = stripAgentFooterLines(content)
+			}
+			if triggerReplyCtx != nil {
+				if content != "" && !isEllipsisOnly(content) {
+					textParts = append(textParts, content)
+				}
+				break
 			}
 			if content != "" && !isEllipsisOnly(content) {
 				// Pre-compute silentHold transition including this chunk so the
@@ -6187,7 +6265,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 			// Flush accumulated text segment before permission prompt
 			previewActive := sp.canPreview()
-			if len(textParts) > segmentStart {
+			if triggerReplyCtx == nil && len(textParts) > segmentStart {
 				if !previewActive {
 					segment := strings.Join(textParts[segmentStart:], "")
 					if segment != "" {
@@ -6305,7 +6383,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// When tool progress is hidden, segmentStart stays 0 and textParts
 			// contains ALL text across tool boundaries. Prefer the full accumulated
 			// text over event.Content which only contains the last assistant segment.
-			if len(textParts) > 0 && segmentStart == 0 && !e.display.ToolMessages {
+			if len(textParts) > 0 && segmentStart == 0 && (!e.display.ToolMessages || triggerReplyCtx != nil) {
 				fullResponse = strings.Join(textParts, "")
 			} else if fullResponse == "" && len(textParts) > 0 {
 				fullResponse = strings.Join(textParts, "")
@@ -6517,7 +6595,11 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			replyStart := time.Now()
 
 			// --- StreamingCard path ---
-			if streamCard != nil && !streamCard.Failed() {
+			if triggerReplyCtx != nil {
+				if !isSilent {
+					e.replyToMessageTrigger(p, triggerReplyCtx, fullResponse, statusFooter, workspaceDir)
+				}
+			} else if streamCard != nil && !streamCard.Failed() {
 				sp.finish("", "") // cleanup preview (should be no-op if card was active)
 				// Silent reply: never render the NO_REPLY marker into the card.
 				// cardAnswerText holds only the text streamed BEFORE the marker
@@ -6729,6 +6811,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				remainingQueue := len(state.pendingMessages)
 				state.platform = queued.platform
 				state.replyCtx = queued.replyCtx
+				state.triggerReplyCtx = queued.triggerReplyCtx
 				state.currentMessageID = queued.messageID
 				state.fromVoice = queued.fromVoice
 				state.currentTurnUserMessageTimeMs = queued.userMessageTimeMs
@@ -6792,6 +6875,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// it for the reply quote. Without this reassignment, msg2's
 				// reply would quote msg1's bubble.
 				replyCtx = queued.replyCtx
+				triggerReplyCtx = queued.triggerReplyCtx
 				// Rich-mode per-turn state must reset too — otherwise EventText for
 				// the queued message would StreamRichCardText against the previous
 				// turn's cardID, overwriting that card's body with the new turn's
@@ -6804,7 +6888,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				queuedRenderer := func(content string) string {
 					return e.renderOutgoingContentForWorkspace(queued.platform, content, workspaceDir)
 				}
-				sp = newStreamPreview(e.streamPreview, queued.platform, queued.replyCtx, e.ctx, queuedRenderer)
+				previewCfg = e.streamPreview
+				previewCfg.Enabled = previewCfg.Enabled && triggerReplyCtx == nil
+				sp = newStreamPreview(previewCfg, queued.platform, queued.replyCtx, e.ctx, queuedRenderer)
 				cp = newCompactProgressWriter(e.ctx, queued.platform, queued.replyCtx, e.agent.Name(), e.i18n.CurrentLang(), queuedRenderer)
 
 				// Reset streaming card state for the next turn
@@ -6814,7 +6900,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				cardAnswerText.Reset()
 
 				// Try to create a new streaming card for the queued turn
-				if scp, ok := queued.platform.(StreamingCardPlatform); ok {
+				if scp, ok := queued.platform.(StreamingCardPlatform); ok && triggerReplyCtx == nil {
 					if sc, err := scp.CreateStreamingCard(e.ctx, queued.replyCtx); err != nil {
 						slog.Warn("streaming card creation failed for queued turn", "error", err)
 					} else {
@@ -6913,7 +6999,11 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						break
 					}
 				}
-				e.send(p, replyCtx, userMsg)
+				if triggerReplyCtx != nil {
+					e.replyToMessageTrigger(p, triggerReplyCtx, userMsg, "", workspaceDir)
+				} else {
+					e.send(p, replyCtx, userMsg)
+				}
 			}
 			// Only drop queued messages if the agent session is dead.
 			// Some agents (e.g. Codex) emit EventError for per-turn failures
@@ -6967,7 +7057,9 @@ channelClosed:
 			Content:    fullResponse,
 		})
 
-		if toolCount > 0 && segmentStart > 0 {
+		if triggerReplyCtx != nil {
+			e.replyToMessageTrigger(p, triggerReplyCtx, fullResponse, "", workspaceDir)
+		} else if toolCount > 0 && segmentStart > 0 {
 			sp.discard()
 			if segmentStart < len(textParts) {
 				unsent := strings.Join(textParts[segmentStart:], "")
@@ -7093,6 +7185,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		state.pendingMessages = state.pendingMessages[1:]
 		state.platform = queued.platform
 		state.replyCtx = queued.replyCtx
+		state.triggerReplyCtx = queued.triggerReplyCtx
 		state.currentMessageID = queued.messageID
 		state.fromVoice = queued.fromVoice
 		state.currentTurnUserMessageTimeMs = queued.userMessageTimeMs

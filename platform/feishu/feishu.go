@@ -131,6 +131,8 @@ type replyContext struct {
 	bootstrapThread  bool
 	receiptEmoji     string // persistent reaction owned by the accepted-message callback
 	receiptMessageID string
+	triggerMention   string // native Feishu at tag, on the final trigger reply context only
+	triggerCC        string // native cc mentions on the last chunk of a trigger result
 	// receiveIDType selects which Feishu ID space chatID belongs to:
 	// "" or "chat_id" (default), "open_id", "union_id".
 	receiveIDType string
@@ -157,6 +159,9 @@ type Platform struct {
 	groupReplyAll              bool
 	skipWhenMentionOthers      bool
 	groupReplyAllChats         map[string]struct{}
+	messageTriggerGroups       []string                                                                        // guarded by mu
+	triggerConfirmationHandler func(id, chatID, userID string, approved bool) (feedback string, resolved bool) // guarded by mu
+	triggerConfirmationRoute   string                                                                          // guarded by mu
 	respondToAtEveryoneAndHere bool
 	shareSessionInChannel      bool
 	threadIsolation            bool
@@ -1020,10 +1025,11 @@ func (p *Platform) webhookHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // onCardAction handles card.action.trigger callbacks via the official SDK event dispatcher.
-// Three prefixes are supported:
+// Callback routes include:
 //   - nav:/xxx   — render a card page and update the original card in-place
 //   - act:/xxx   — execute an action, then render and update the card in-place
 //   - cmd:/xxx   — legacy: dispatch as a user command (sends a new message)
+//   - trigger-confirm: — resolve an admin confirmation for a message trigger
 func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, error) {
 	if event.Event == nil || event.Event.Action == nil {
 		return nil, nil
@@ -1077,6 +1083,10 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 	if event.Event.Context != nil {
 		chatID = event.Event.Context.OpenChatID
 		messageID = event.Event.Context.OpenMessageID
+	}
+	if data, ok := strings.CutPrefix(actionVal, triggerConfirmationPrefix); ok {
+		route, _ := event.Event.Action.Value[triggerConfirmationRouteKey].(string)
+		return p.onTriggerConfirmation(data, route, chatID, userID), nil
 	}
 	if chatID == "" {
 		chatID = userID
@@ -1513,6 +1523,15 @@ func (p *Platform) dispatchCardActionMessage(chatID string, msg *core.Message) {
 func (p *Platform) dispatchCoreMessage(msg *core.Message) {
 	if p.inboundCoalesceWindow > 0 && msg != nil {
 		p.inboundDispatchMu.Lock()
+		// Evaluate each rule candidate against its own message ID. The engine
+		// may consult an external model, so do not hold the platform dispatch
+		// lock during the evaluation.
+		if msg.Trigger != nil && msg.Trigger.BotMentionKnown && !msg.Trigger.DirectBotMention {
+			p.flushInboundSession(msg.SessionKey)
+			p.inboundDispatchMu.Unlock()
+			p.deliverCoreMessage(msg)
+			return
+		}
 		defer p.inboundDispatchMu.Unlock()
 		p.populateWorkspaceChannelKeys(msg)
 		p.coalesceInboundMessage(msg)
@@ -2077,6 +2096,11 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	botOpenID := p.getBotOpenID()
 	filterActive := botOpenID != "" || p.IsGroupFilterDegraded()
 	botMentioned := botOpenID != "" && isBotMentioned(msg.Mentions, botOpenID)
+	trigger := p.triggerEvent(msg, sender.SenderId, senderType, botOpenID)
+	if trigger != nil {
+		botMentioned = botMentioned || trigger.DirectBotMention
+	}
+	canTrigger := trigger != nil && trigger.BotMentionKnown && !botMentioned
 	if msgType == "interactive" && (chatType != "group" || !botMentioned) {
 		return nil
 	}
@@ -2087,9 +2111,12 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// fail-closed here: enabling this option while bot discovery is unavailable
 	// drops all mentioned group messages rather than letting this bot compete.
 	if shouldSkipMentionedOthers(chatType, groupReplyAllForChat, p.skipWhenMentionOthers, len(msg.Mentions), botMentioned) {
-		slog.Debug(p.tag()+": skipping group message that mentions others only",
-			"chat_id", chatID, "message_id", messageID)
-		return nil
+		if !canTrigger {
+			slog.Debug(p.tag()+": skipping group message that mentions others only",
+				"chat_id", chatID, "message_id", messageID)
+			return nil
+		}
+		trigger.RuleOnly = true
 	}
 
 	// With history sharing enabled, observe ordinary text/post messages only
@@ -2097,17 +2124,29 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// existing mention filter and before allow_from: the chat controls whether
 	// cc-connect may observe the conversation, while allow_from controls who may
 	// trigger an agent turn.
+	var groupHistoryCtx groupHistoryContext
 	if p.groupChatHistoryShare && chatType == "group" && !groupReplyAllForChat && botOpenID != "" &&
 		!botMentioned && !atEveryone && isGroupHistoryMessageType(msgType) {
 		if !core.AllowList(p.allowChat, chatID) {
 			slog.Debug(p.tag()+": group history ignored for unauthorized chat", "chat_id", chatID)
 			return nil
 		}
-		p.rememberGroupHistory(
-			p.groupHistoryScope(msg, chatID), messageID, msgType, stringValue(msg.Content), msg.Mentions,
-			userID, senderType,
-		)
-		return nil
+		scope := p.groupHistoryScope(msg, chatID)
+		if canTrigger {
+			groupHistoryCtx = p.snapshotGroupHistory(scope)
+			consume := groupHistoryCtx.onAccepted
+			groupHistoryCtx.onAccepted = func() {
+				if consume != nil {
+					consume()
+				}
+				p.removeGroupHistory(messageID)
+			}
+		}
+		p.rememberGroupHistory(scope, messageID, msgType, stringValue(msg.Content), msg.Mentions, userID, senderType)
+		if !canTrigger {
+			return nil
+		}
+		trigger.RuleOnly = true
 	}
 
 	// Issue #1618: the mention filter used to gate on `botOpenID != ""`,
@@ -2137,6 +2176,8 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 				slog.Debug(p.tag()+": passing attachment through active thread without mention",
 					"chat_id", chatID, "session_key", sessionKey, "msg_type", msgType, "message_id", messageID,
 					"staged", stageAttachmentOnly)
+			case canTrigger:
+				trigger.RuleOnly = true
 			default:
 				if p.IsGroupFilterDegraded() && botOpenID == "" {
 					// Fail closed: drop the message. Use WARN (not
@@ -2176,7 +2217,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		// overheard via group_reply_all are dropped silently — replying to
 		// every unauthorized group member would flood the chat, and the
 		// unauthorized-chat branch above is silent for the same reason.
-		if chatType != "group" || isBotMentioned(msg.Mentions, p.getBotOpenID()) {
+		if chatType != "group" || botMentioned {
 			p.replyUnauthorizedAccess(ctx, replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey})
 		}
 		return nil
@@ -2211,7 +2252,6 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	}
 
 	rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}
-	var groupHistoryCtx groupHistoryContext
 	if p.groupChatHistoryShare && chatType == "group" && !groupReplyAllForChat && botOpenID != "" && (botMentioned || atEveryone) {
 		scope := p.groupHistoryScope(msg, chatID)
 		if p.isGroupHistoryNewCommand(msgType, content, mentions) {
@@ -2230,7 +2270,11 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// in the same thread can pass through without re-mentioning the bot. When
 	// this is the first accepted message in an existing thread, remember that
 	// dispatch must bootstrap the agent context from the parent/root message.
-	rctx.bootstrapThread = p.markThreadSessionActive(sessionKey)
+	if trigger != nil && trigger.RuleOnly {
+		rctx.bootstrapThread = p.threadIsolation && isThreadSessionKey(sessionKey) && !p.isActiveThreadSession(sessionKey)
+	} else {
+		rctx.bootstrapThread = p.markThreadSessionActive(sessionKey)
+	}
 	if rctx.bootstrapThread && parentID == "" {
 		parentID = stringValue(msg.RootId)
 	}
@@ -2239,7 +2283,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// blocked by IO-heavy operations (image/audio download, handler HTTP calls).
 	// The dedup and old-message checks above remain synchronous to guarantee
 	// correctness before spawning the goroutine.
-	go p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs, groupHistoryCtx, staged)
+	go p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs, groupHistoryCtx, staged, trigger)
 
 	return nil
 }
@@ -2261,10 +2305,10 @@ func (p *Platform) replyUnauthorizedAccess(ctx context.Context, rctx replyContex
 // handler invocation. It runs in its own goroutine so that onMessage returns
 // quickly and does not block the SDK event loop.
 func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64) {
-	p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs, groupHistoryContext{}, nil)
+	p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs, groupHistoryContext{}, nil, nil)
 }
 
-func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64, groupHistoryCtx groupHistoryContext, staged []stagedAttachment) {
+func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64, groupHistoryCtx groupHistoryContext, staged []stagedAttachment, trigger *core.MessageTriggerEvent) {
 	if p.isMessageRecalled(messageID) {
 		slog.Debug(p.tag()+": recalled message ignored in async dispatch", "message_id", messageID)
 		return
@@ -2303,9 +2347,18 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 		quotedExtra = joinFeishuExtraContent(quotedExtra, strings.Join(stagedNotes, "\n"))
 	}
 	dispatchCore := func(msg *core.Message) {
+		msg.Trigger = trigger
 		if historyText != "" {
 			msg.ExtraContent = joinFeishuExtraContent(historyText, msg.ExtraContent)
-			msg.OnAccepted = groupHistoryCtx.onAccepted
+		}
+		msg.OnAccepted = groupHistoryCtx.onAccepted
+		if trigger != nil && trigger.RuleOnly && p.threadIsolation && isThreadSessionKey(sessionKey) {
+			msg.OnAccepted = func() {
+				p.markThreadSessionActive(sessionKey)
+				if groupHistoryCtx.onAccepted != nil {
+					groupHistoryCtx.onAccepted()
+				}
+			}
 		}
 		p.dispatchCoreMessage(msg)
 	}
@@ -2320,6 +2373,9 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 			return
 		}
 		text := stripMentions(textBody.Text, mentions, p.getBotOpenID())
+		if trigger != nil {
+			trigger.Body = text
+		}
 		// On-demand quoted-file retrieval (issue #1560): the filter
 		// decides whether ANY of the quoted file candidates are eligible
 		// (gates: @bot mention AND same IM user as the trigger). Only
@@ -2442,10 +2498,15 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 			post = &postLang{}
 		}
 		textParts, images := p.extractPostParts(messageID, post, mentions...)
-		files, notices := p.downloadPostFiles(messageID, post.Files, strings.Join(textParts, "\n"))
+		userText := strings.Join(textParts, "\n")
+		botID := p.getBotOpenID()
+		if trigger != nil {
+			trigger.Body = stripMentions(userText, mentions, botID)
+		}
+		files, notices := p.downloadPostFiles(messageID, post.Files, userText)
 		textParts = append(textParts, notices...)
 		files = append(files, p.downloadQuotedFiles(ctx, p.filterQuotedFilesForUser(quoted.files, mentions, userID))...)
-		text := stripMentions(strings.Join(textParts, "\n"), mentions, p.getBotOpenID())
+		text := stripMentions(strings.Join(textParts, "\n"), mentions, botID)
 		images = append(images, stagedImages...)
 		files = append(files, stagedFiles...)
 		if text == "" && historyText == "" && len(images) == 0 && len(files) == 0 && quoted.text == "" && len(quoted.images) == 0 {
@@ -3877,6 +3938,9 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 	if !ok {
 		return fmt.Errorf("%s: invalid reply context type %T", p.tag(), rctx)
 	}
+	if rc.triggerMention != "" {
+		return p.replyToTrigger(ctx, rc, content)
+	}
 
 	content = p.resolveMentionsInContent(ctx, rc.chatID, content)
 	msgType, msgBody := buildReplyContent(content)
@@ -4504,7 +4568,7 @@ func (p *Platform) fetchBotOpenID() (string, error) {
 
 func isBotMentioned(mentions []*larkim.MentionEvent, botOpenID string) bool {
 	for _, m := range mentions {
-		if m.Id != nil && m.Id.OpenId != nil && *m.Id.OpenId == botOpenID {
+		if m != nil && m.Id != nil && m.Id.OpenId != nil && *m.Id.OpenId == botOpenID {
 			return true
 		}
 	}
@@ -4650,7 +4714,7 @@ func stripMentions(text string, mentions []*larkim.MentionEvent, botOpenID strin
 		return text
 	}
 	for _, m := range mentions {
-		if m.Key == nil {
+		if m == nil || m.Key == nil {
 			continue
 		}
 		if botOpenID != "" && m.Id != nil && m.Id.OpenId != nil && *m.Id.OpenId == botOpenID {

@@ -1,18 +1,25 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useLocation } from 'react-router-dom';
 import { FileCode, RefreshCw, RotateCcw, Settings2, ChevronDown, ChevronRight } from 'lucide-react';
 import { Card, Button } from '@/components/ui';
 import { restartSystem, reloadConfig } from '@/api/status';
 import api from '@/api/client';
 import GlobalSettings from './GlobalSettings';
+import MessageTriggerModelSettings from './MessageTriggerModelSettings';
 
 export default function SystemConfig() {
   const { t } = useTranslation();
+  const { hash } = useLocation();
   const [content, setContent] = useState('');
   const [format, setFormat] = useState<'toml' | 'json'>('toml');
   const [loading, setLoading] = useState(true);
   const [actionMsg, setActionMsg] = useState('');
   const [showRaw, setShowRaw] = useState(false);
+
+  useEffect(() => {
+    if (hash === '#message-trigger-model') document.getElementById('message-trigger-model')?.scrollIntoView();
+  }, [hash]);
 
   const fetchConfig = useCallback(async () => {
     setLoading(true);
@@ -85,7 +92,12 @@ export default function SystemConfig() {
           <Settings2 size={16} className="text-gray-400" />
           <h2 className="text-sm font-semibold text-gray-900 dark:text-white">{t('settings.title', 'Global Settings')}</h2>
         </div>
-        <GlobalSettings />
+        <div className="space-y-5">
+          <div id="message-trigger-model">
+            <MessageTriggerModelSettings onSaved={fetchConfig} />
+          </div>
+          <GlobalSettings />
+        </div>
       </div>
 
       {/* Raw Config (collapsible) */}

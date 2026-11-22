@@ -21,6 +21,7 @@ cc-connect 完整功能使用指南。
 - [图片与文件回传](#图片与文件回传)
 - [生命周期钩子](#生命周期钩子)
 - [定时任务 (Cron)](#定时任务-cron)
+- [消息触发任务](#消息触发任务)
 - [Shell 配置](#shell-配置)
 - [多机器人中继](#多机器人中继)
 - [守护进程模式](#守护进程模式)
@@ -873,9 +874,123 @@ Claude Code 会自动创建定时任务。对依赖记忆文件的其他 Agent�
 
 ---
 
+## 消息触发任务
+
+群消息命中规则时，cc-connect 会执行所属项目的动作。在 Web 管理后台打开 **项目 → 对应项目 → 触发任务**，也可以直接在 `config.toml` 的对应项目下添加 `[[projects.message_triggers]]`。如果飞书和 Telegram 分属两个项目，在 Web 后台分别打开各自的项目配置规则。
+
+规则只能选择该项目已配置的渠道，且机器人需要能接收目标群的普通消息。
+
+- **飞书或 Lark** 需要发布 `im:message.group_msg` 权限，并订阅 `im.message.receive_v1`。使用确认按钮时还需订阅 `card.action.trigger`。[飞书配置指南](./feishu.md)
+- **Telegram** 会向群管理员机器人或关闭群隐私模式的机器人推送普通群消息。修改群隐私模式后，将机器人重新添加到群中。[Telegram 群隐私模式](https://core.telegram.org/bots/features#privacy-mode)
+
+### 规则顺序与匹配
+
+每条规则可以配置多个条件组。组间用 `group_match`，默认 `or`。组内用 `match`，默认 `and`。在任一级，`and` 都要求全部满足，`or` 都只要求一项满足。
+
+- `group`、`sender`、`mentioned` 分别匹配群、发件人和被 @ 的用户。用 `values` 填写 ID，同一条件内匹配任一 ID 即可。Telegram 的发件人和被 @ 用户条件也支持事件中带有的 `@用户名`。
+- `regex` 用 `value` 填写 Go 正则表达式（RE2），匹配原消息正文。默认区分大小写，可用 `(?i:incident|outage)` 忽略大小写。
+
+每条规则至少包含一个 `group` 条件。机器人只监听这条规则的所有 `group` 条件列出的群，渠道原有的访问限制仍然生效。`group` 条件也参与组内判断。只配置 `group` 时，列出的群内普通消息都符合条件。组内同时配置群和正则时，使用 `and` 要求两项都满足。
+
+历史平铺规则仍可读取。原有群与身份限制迁移至条件组，旧关键词转换为忽略大小写的字面正则。旧确认设置迁移为人工确认，旧意图条件迁移为意图判断。两者同时存在时优先保留人工确认。保存时写入新的规则结构。
+
+规则按列表从下往上检查，首条命中即停止。直接 @ 机器人时按原有对话流程处理。
+
+以下规则可添加到已配置飞书渠道的项目。使用确认前，在该项目的 `[[projects]]` 表中填写有效的 `admin_from`，例如 `admin_from = "ou_example_admin"`。
+
+```toml
+[[projects.message_triggers]]
+name = "反馈分流"
+enabled = true
+platform = "feishu"
+group_match = "or"
+trigger_mode = "manual"
+action = "agent"
+prompt = "简要归纳故障，列出需要补充的信息。"
+cc_enabled = true
+cc_user_ids = ["ou_example_recipient"]
+
+[[projects.message_triggers.groups]]
+match = "and"
+
+[[projects.message_triggers.groups.conditions]]
+type = "group"
+values = ["oc_example_group"]
+
+[[projects.message_triggers.groups.conditions]]
+type = "regex"
+value = '故障|异常'
+
+[[projects.message_triggers.groups]]
+match = "and"
+
+[[projects.message_triggers.groups.conditions]]
+type = "group"
+values = ["oc_example_escalations"]
+
+[[projects.message_triggers.groups.conditions]]
+type = "sender"
+values = ["ou_example_sender"]
+```
+
+Telegram Shell 规则添加到配置了 Telegram 的项目。以下示例匹配整条消息“状态”。
+
+```toml
+[[projects.message_triggers]]
+name = "查询状态"
+enabled = true
+platform = "telegram"
+trigger_mode = "direct"
+action = "shell"
+command = "echo trigger-ok"
+
+[[projects.message_triggers.groups]]
+match = "and"
+
+[[projects.message_triggers.groups.conditions]]
+type = "group"
+values = ["-1001234567890"]
+
+[[projects.message_triggers.groups.conditions]]
+type = "regex"
+value = '^状态$'
+```
+
+### 触发方式与共享意图模型
+
+条件组匹配后，`trigger_mode = "direct"` 直接执行动作。`trigger_mode = "manual"` 等待管理员批准。`trigger_mode = "intent"` 让模型根据 `intent_prompt` 中的自然语言提示词作出决定。
+
+在 Web 后台或 `config.toml` 顶层配置共享意图模型。Web 后台会先验证接口，验证通过后才保存。直接修改 TOML 后重新加载配置。`base_url`、`model` 和 `api_type` 可以引用环境变量。规则值按字面读取。
+
+```toml
+[message_trigger_model]
+base_url = "https://model.example.com/v1"
+api_type = "chat_completions"
+model = "your-model"
+api_key = "your-api-key"
+timeout_seconds = 10
+```
+
+`api_type` 默认是 `chat_completions`，服务在 `base_url` 后追加 `/chat/completions`。将其设为 `responses` 时使用 `/responses`。`api_key` 直接填写密钥。接口无需认证时可留空。默认超时为 10 秒。
+
+Web 后台只显示密钥是否已保存，配置预览会遮盖密钥值。修改 Base URL 时，旧密钥不会发送到新地址。新接口需要认证时填入对应密钥，无需认证时可清除已保存的密钥。未配置 `api_key` 时，旧配置的 `api_key_env` 仍可作为回退。Web 保存后，Unix 上配置文件的权限为 `0600`。
+
+模型输入包括 `intent_prompt`、同一会话的近期消息和原始触发消息。模型必须支持强制调用函数工具 `submit_trigger_decision`，返回 `decision`（`yes`、`no` 或 `confirm`）及 `reason`。`yes` 执行动作，`no` 跳过动作，`confirm` 等待管理员批准。确认卡片会显示模型给出的理由。需要确认却缺少符合条件的管理员时，动作不会执行。模型调用失败、超时或返回无效结果时，也会跳过动作。
+
+### 动作、确认与抄送
+
+- `action = "agent"` 沿用项目已有的 Agent 会话和队列。`prompt` 是附在原消息前的指令。最终回复引用原群消息，并原生 @ 原发送者。
+- `action = "shell"` 使用运行 cc-connect 的本机 Shell，在项目当前工作目录执行固定的 `command`，超时为 60 秒。群消息内容不会被拼入命令。标准输出和标准错误（stdout、stderr）会作为执行结果回复原群消息。
+- 人工确认或模型返回 `confirm` 时，机器人引用原群消息发送带 **是／否** 按钮的确认请求。请求的 `cc` 行原生 @ 项目 `admin_from` 中对应渠道的显式管理员。只有 `admin_from` 授权的管理员可选择。请填管理员本人的实际渠道用户 ID，可通过机器人回复的 `/whoami` 获取。飞书或 Lark 填 OpenID（`ou_…`），Telegram 填正整数用户 ID。通配符 `*` 无法定位具体用户。确认请求在五分钟后失效，重新加载或修改项目规则以及服务重启也会使请求失效。
+- `cc_enabled = true` 在最终回复末尾添加 `cc` 行，原生 @ `cc_user_ids` 中的用户。开启时至少填写一个对应渠道的用户 ID，关闭后保留已填的 ID。确认请求始终根据 `admin_from` 获取管理员。
+
+在 Web 后台保存会写入 `config.toml` 并立即生效。直接修改 TOML 后，在后台重新加载配置，或调用 `POST /api/v1/reload`。规则管理接口使用已配置的管理 token。管理 token 留空时，接口仅接受本机同源请求。
+
+---
+
 ## Shell 配置
 
-默认情况下，cc-connect 在 Unix 上使用 `sh`，Windows 上使用 `powershell.exe` 来执行所有 shell 命令（`/shell`、cron exec、hooks 和 webhook exec）。你可以配置使用其他 shell。
+默认情况下，cc-connect 在 Unix 上使用 `sh`，Windows 上使用 `powershell.exe` 执行 shell 命令。你可以配置使用其他 shell。
 
 ### 支持的 Shell
 
@@ -940,6 +1055,7 @@ Shell 配置适用于 cc-connect 中所有命令执行路径：
 
 - **`/shell` 命令** — 聊天中的交互式 shell 命令
 - **Cron exec 任务** — `[[cron]]` 中 `exec` 字段的定时任务
+- **消息触发任务** — `[[projects.message_triggers]]` 中 `action = "shell"` 的规则
 - **Hooks** — `[[hooks]]` 中 `type = "command"` 的钩子
 - **Webhook exec** — webhook 请求中 `exec` 字段的命令
 
@@ -1071,7 +1187,7 @@ go build -tags 'no_web' ./cmd/cc-connect
 
 API 与 Web UI 共用同一端口。基础 URL：`http://<host>:<port>/api/v1`
 
-所有 API 请求需要 `Authorization: Bearer <token>` 请求头。
+配置管理 token 时，API 请求需要 `Authorization: Bearer <token>` 请求头。管理 token 留空时，触发规则接口仅接受本机同源请求。
 
 主要接口：
 
@@ -1081,6 +1197,8 @@ API 与 Web UI 共用同一端口。基础 URL：`http://<host>:<port>/api/v1`
 | `POST` | `/api/v1/restart` | 重启 cc-connect |
 | `POST` | `/api/v1/reload` | 重新加载配置 |
 | `GET` | `/api/v1/projects` | 项目列表 |
+| `GET` | `/api/v1/projects/<name>/message-triggers` | 读取项目触发规则和版本 |
+| `PUT` | `/api/v1/projects/<name>/message-triggers` | 使用当前 `revision` 和更新后的 `rules` 替换项目规则 |
 | `GET` | `/api/v1/sessions?project=<name>` | 查询项目的会话列表 |
 | `GET` | `/api/v1/cron` | 定时任务列表 |
 | `GET` | `/api/v1/settings` | 获取全局设置 |

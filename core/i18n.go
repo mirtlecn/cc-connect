@@ -552,14 +552,22 @@ const (
 
 	MsgCommandTimeout MsgKey = "command_timeout"
 
-	MsgBannedWordBlocked MsgKey = "banned_word_blocked"
-	MsgCommandDisabled   MsgKey = "command_disabled"
-	MsgAdminRequired     MsgKey = "admin_required"
-	MsgRateLimited       MsgKey = "rate_limited"
-	MsgPsSent            MsgKey = "ps_sent"
-	MsgPsSendFailed      MsgKey = "ps_send_failed"
-	MsgPsEmpty           MsgKey = "ps_empty"
-	MsgPsNoSession       MsgKey = "ps_no_session"
+	MsgBannedWordBlocked         MsgKey = "banned_word_blocked"
+	MsgCommandDisabled           MsgKey = "command_disabled"
+	MsgAdminRequired             MsgKey = "admin_required"
+	MsgMessageTriggerConfirm     MsgKey = "message_trigger_confirm"
+	MsgMessageTriggerReason      MsgKey = "message_trigger_reason"
+	MsgMessageTriggerYes         MsgKey = "message_trigger_yes"
+	MsgMessageTriggerNo          MsgKey = "message_trigger_no"
+	MsgMessageTriggerAdminOnly   MsgKey = "message_trigger_admin_only"
+	MsgMessageTriggerUnavailable MsgKey = "message_trigger_unavailable"
+	MsgMessageTriggerApproved    MsgKey = "message_trigger_approved"
+	MsgMessageTriggerRejected    MsgKey = "message_trigger_rejected"
+	MsgRateLimited               MsgKey = "rate_limited"
+	MsgPsSent                    MsgKey = "ps_sent"
+	MsgPsSendFailed              MsgKey = "ps_send_failed"
+	MsgPsEmpty                   MsgKey = "ps_empty"
+	MsgPsNoSession               MsgKey = "ps_no_session"
 
 	MsgWhoamiTitle     MsgKey = "whoami_title"
 	MsgWhoamiCardTitle MsgKey = "whoami_card_title"
@@ -3462,6 +3470,62 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "🔒 命令 `%s` 需要管理員權限。請在配置中設定 `admin_from` 來授權使用者。",
 		LangJapanese:           "🔒 コマンド `%s` には管理者権限が必要です。設定で `admin_from` を設定してユーザーを承認してください。",
 		LangSpanish:            "🔒 El comando `%s` requiere privilegios de administrador. Configure `admin_from` en la configuración.",
+	},
+	MsgMessageTriggerConfirm: {
+		LangEnglish:            "Run message trigger “%s”? A project administrator can decide within five minutes.",
+		LangChinese:            "是否执行触发任务「%s」？请项目管理员在 5 分钟内选择。",
+		LangTraditionalChinese: "是否執行觸發任務「%s」？請專案管理員在 5 分鐘內選擇。",
+		LangJapanese:           "メッセージトリガー「%s」を実行しますか？プロジェクト管理者が5分以内に選択できます。",
+		LangSpanish:            "¿Ejecutar el disparador «%s»? Un administrador del proyecto puede decidir en cinco minutos.",
+	},
+	MsgMessageTriggerReason: {
+		LangEnglish:            "Reason: %s",
+		LangChinese:            "理由：%s",
+		LangTraditionalChinese: "理由：%s",
+		LangJapanese:           "理由：%s",
+		LangSpanish:            "Motivo: %s",
+	},
+	MsgMessageTriggerYes: {
+		LangEnglish:            "Yes",
+		LangChinese:            "是",
+		LangTraditionalChinese: "是",
+		LangJapanese:           "はい",
+		LangSpanish:            "Sí",
+	},
+	MsgMessageTriggerNo: {
+		LangEnglish:            "No",
+		LangChinese:            "否",
+		LangTraditionalChinese: "否",
+		LangJapanese:           "いいえ",
+		LangSpanish:            "No",
+	},
+	MsgMessageTriggerAdminOnly: {
+		LangEnglish:            "Only project administrators can confirm this task.",
+		LangChinese:            "只有项目管理员可以确认此任务。",
+		LangTraditionalChinese: "只有專案管理員可以確認此任務。",
+		LangJapanese:           "このタスクを確認できるのはプロジェクト管理者だけです。",
+		LangSpanish:            "Solo los administradores del proyecto pueden confirmar esta tarea.",
+	},
+	MsgMessageTriggerUnavailable: {
+		LangEnglish:            "This confirmation has expired or is no longer pending.",
+		LangChinese:            "这次确认已过期或已处理。",
+		LangTraditionalChinese: "這次確認已過期或已處理。",
+		LangJapanese:           "この確認は期限切れか処理済みです。",
+		LangSpanish:            "Esta confirmación ha caducado o ya se ha procesado.",
+	},
+	MsgMessageTriggerApproved: {
+		LangEnglish:            "Confirmed. Task submitted.",
+		LangChinese:            "已确认，任务已提交。",
+		LangTraditionalChinese: "已確認，任務已提交。",
+		LangJapanese:           "確認しました。タスクを送信しました。",
+		LangSpanish:            "Confirmado. Se ha enviado la tarea.",
+	},
+	MsgMessageTriggerRejected: {
+		LangEnglish:            "Task declined.",
+		LangChinese:            "已拒绝执行。",
+		LangTraditionalChinese: "已拒絕執行。",
+		LangJapanese:           "タスクの実行を拒否しました。",
+		LangSpanish:            "Tarea rechazada.",
 	},
 	MsgRateLimited: {
 		LangEnglish:            "⏳ You are sending messages too fast. Please wait a moment.",

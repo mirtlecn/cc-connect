@@ -20,6 +20,7 @@ Complete guide to using cc-connect features.
 - [Image and File Send-Back](#image-and-file-send-back)
 - [Lifecycle Hooks](#lifecycle-hooks)
 - [Scheduled Tasks (Cron)](#scheduled-tasks-cron)
+- [Message Triggers](#message-triggers)
 - [Shell Configuration](#shell-configuration)
 - [Multi-Bot Relay](#multi-bot-relay)
 - [Daemon Mode](#daemon-mode)
@@ -962,9 +963,123 @@ Claude Code auto-creates the cron job. For other agents that rely on memory file
 
 ---
 
+## Message Triggers
+
+Message triggers run a project action when a group message matches a rule. Open **Projects → your project → Message triggers** in the Web dashboard, or add `[[projects.message_triggers]]` entries under the existing project in `config.toml`. If Feishu and Telegram are configured in separate projects, open each project separately to manage its rules.
+
+The rule's platform must already be configured for the project. The bot must receive ordinary group messages in the selected groups.
+
+- **Feishu or Lark** requires the published `im:message.group_msg` permission and the `im.message.receive_v1` event. For confirmation buttons, subscribe to `card.action.trigger` as well. [Feishu setup](./feishu.md)
+- **Telegram** delivers ordinary group messages to bot administrators or to bots with Group Privacy disabled. Re-add the bot to the group after changing its privacy setting. [Telegram Privacy Mode](https://core.telegram.org/bots/features#privacy-mode)
+
+### Rule order and matching
+
+A rule can have several condition groups. `group_match` combines the groups and defaults to `or`. Each group's `match` combines its conditions and defaults to `and`. At either level, `and` requires every item to match and `or` requires any one item.
+
+- `group`, `sender`, and `mentioned` match the chat, sender, or a mentioned user by ID. Enter the IDs as `values`. Any ID in the list matches. For senders and mentioned users, Telegram also accepts `@username` where the event supplies it.
+- `regex` matches the original message text. Enter a Go regular expression (RE2) as `value`. Matching is case-sensitive by default. A pattern such as `(?i:incident|outage)` ignores case.
+
+Every rule needs at least one `group` condition. The bot only watches the chats listed by the rule's `group` conditions, subject to the platform's existing access filters. Each `group` condition also participates in its group's logic. A rule with just a `group` condition matches ordinary messages from those chats. Use `and` when the message must come from a specified chat and match a regex.
+
+Existing flat rules still load. Group and identity requirements become grouped conditions, and keywords become case-insensitive literal regular expressions. Legacy confirmation settings migrate to manual mode. Legacy intent conditions migrate to intent mode, with manual mode taking precedence when both were used. Saving writes the new rule structure.
+
+Rules are checked from the bottom of the list upward and stop at the first match. A direct mention of the bot follows the usual conversation flow.
+
+Add a rule to an existing Feishu project. To enable confirmation, set a valid `admin_from` on that project's `[[projects]]` table, such as `admin_from = "ou_example_admin"`.
+
+```toml
+[[projects.message_triggers]]
+name = "Triage an incident"
+enabled = true
+platform = "feishu"
+group_match = "or"
+trigger_mode = "manual"
+action = "agent"
+prompt = "Summarize the incident and ask for any missing details."
+cc_enabled = true
+cc_user_ids = ["ou_example_recipient"]
+
+[[projects.message_triggers.groups]]
+match = "and"
+
+[[projects.message_triggers.groups.conditions]]
+type = "group"
+values = ["oc_example_group"]
+
+[[projects.message_triggers.groups.conditions]]
+type = "regex"
+value = '(?i:incident|outage)'
+
+[[projects.message_triggers.groups]]
+match = "and"
+
+[[projects.message_triggers.groups.conditions]]
+type = "group"
+values = ["oc_example_escalations"]
+
+[[projects.message_triggers.groups.conditions]]
+type = "sender"
+values = ["ou_example_sender"]
+```
+
+Add this Shell rule to a project with Telegram configured. It matches a message whose entire text is `status`, regardless of case.
+
+```toml
+[[projects.message_triggers]]
+name = "Check status"
+enabled = true
+platform = "telegram"
+trigger_mode = "direct"
+action = "shell"
+command = "echo trigger-ok"
+
+[[projects.message_triggers.groups]]
+match = "and"
+
+[[projects.message_triggers.groups.conditions]]
+type = "group"
+values = ["-1001234567890"]
+
+[[projects.message_triggers.groups.conditions]]
+type = "regex"
+value = '(?i)^status$'
+```
+
+### Trigger mode and the shared intent model
+
+After the grouped conditions match, `trigger_mode = "direct"` runs the action immediately. Use `trigger_mode = "manual"` to ask an administrator to approve it first. Use `trigger_mode = "intent"` to ask the model for a decision, with a natural-language prompt in `intent_prompt`.
+
+Configure the shared intent model in the Web dashboard or at the top level of `config.toml`. The Web dashboard probes the endpoint before saving. After editing the file directly, reload the configuration. The `base_url`, `model`, and `api_type` settings support environment references. Rule values are read literally.
+
+```toml
+[message_trigger_model]
+base_url = "https://model.example.com/v1"
+api_type = "chat_completions"
+model = "your-model"
+api_key = "your-api-key"
+timeout_seconds = 10
+```
+
+`api_type = "chat_completions"` is the default and appends `/chat/completions` to `base_url`. Use `api_type = "responses"` for `/responses`. Enter `api_key` directly or leave it empty for an endpoint without authentication. The default timeout is 10 seconds.
+
+The Web dashboard shows whether a key is stored and masks it in the configuration preview. It never sends the old key to a different base URL. Provide a key for the new endpoint if it requires authentication, or clear the saved key to use an endpoint without authentication. Existing `api_key_env` values remain a fallback when `api_key` is empty. Web saves use file mode `0600` on Unix.
+
+The model receives `intent_prompt`, recent messages from the same session, and the original trigger message. It must support the required function call `submit_trigger_decision` with a `decision` of `yes`, `no`, or `confirm`, plus a `reason`. `yes` runs the action, `no` declines it, and `confirm` waits for administrator approval. The confirmation card shows the model's reason. The action is skipped if approval is needed and there is no eligible administrator, or if the model call fails, times out, or returns an invalid decision.
+
+### Actions, confirmation, and CC
+
+- `action = "agent"` sends the message through the project's existing Agent session and queue. Set `prompt` to prepend instructions. The final reply quotes the original group message and mentions its sender.
+- `action = "shell"` runs the fixed `command` on the machine running cc-connect, in the project's resolved working directory. It uses the configured shell, has a 60-second timeout, and replies to the original group message with standard output and standard error (stdout and stderr). The incoming message text stays out of the command.
+- Manual mode and a model decision of `confirm` send a **Yes / No** prompt quoting the original message. A `cc` line mentions explicit administrators for that platform in the project's `admin_from`. Only administrators authorized by `admin_from` can decide. Enter their actual platform user IDs, which they can find with the bot's `/whoami` command. Use Feishu or Lark OpenIDs (`ou_…`) or positive Telegram user IDs. The wildcard `*` cannot identify an administrator to mention. A request expires after five minutes, when the project's rules are reloaded or edited, or when the process restarts.
+- `cc_enabled = true` adds a `cc` line with native mentions for `cc_user_ids` to the final reply. Enter at least one platform user ID when enabled. Turning it off keeps the IDs for later use. The confirmation prompt gets its recipients from `admin_from` independently.
+
+The Web dashboard saves rules to `config.toml` and applies them immediately. After editing the file directly, reload configuration from the dashboard or call `POST /api/v1/reload`. The rule endpoints accept the configured management token, or local same-origin requests when the management token is unset.
+
+---
+
 ## Shell Configuration
 
-By default, cc-connect uses `sh` on Unix and `powershell.exe` on Windows for all shell execution (`/shell` commands, cron exec jobs, hooks, and webhook exec). You can override this to use a different shell.
+By default, cc-connect uses `sh` on Unix and `powershell.exe` on Windows for all shell execution. You can override this to use a different shell.
 
 ### Supported Shells
 
@@ -1029,6 +1144,7 @@ The shell configuration applies to all command execution in cc-connect:
 
 - **`/shell` command** — interactive shell commands from chat
 - **Cron exec jobs** — `[[cron]]` entries with `exec` field
+- **Message triggers** — `[[projects.message_triggers]]` entries with `action = "shell"`
 - **Hooks** — `[[hooks]]` entries with `type = "command"`
 - **Webhook exec** — webhook requests with `exec` field
 
@@ -1160,7 +1276,7 @@ When built with `no_web`, the `/web` command will report that web admin is not a
 
 The Management API is served on the same port as the UI. Base URL: `http://<host>:<port>/api/v1`
 
-All API requests require the `Authorization: Bearer <token>` header.
+When a management token is configured, API requests require the `Authorization: Bearer <token>` header. Without a management token, the message trigger endpoints require local same-origin access.
 
 Key endpoints:
 
@@ -1170,6 +1286,8 @@ Key endpoints:
 | `POST` | `/api/v1/restart` | Restart cc-connect |
 | `POST` | `/api/v1/reload` | Reload configuration |
 | `GET` | `/api/v1/projects` | List projects |
+| `GET` | `/api/v1/projects/<name>/message-triggers` | Read project trigger rules and their revision |
+| `PUT` | `/api/v1/projects/<name>/message-triggers` | Replace trigger rules using the current `revision` and updated `rules` |
 | `GET` | `/api/v1/sessions?project=<name>` | List sessions for a project |
 | `GET` | `/api/v1/cron` | List cron jobs |
 | `GET` | `/api/v1/settings` | Get global settings |

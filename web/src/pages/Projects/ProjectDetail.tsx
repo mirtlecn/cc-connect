@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Plug, Heart, Settings, Layers, Zap, Pause, Play,
-  Trash2, Plus, Check, Clock, ExternalLink, Link2, FolderTree, Folder,
+  Trash2, Plus, Check, Clock, ExternalLink, Link2, FolderTree, Folder, ListFilter,
 } from 'lucide-react';
 import { Card, Badge, Button, Input, Modal, EmptyState } from '@/components/ui';
 import {
@@ -17,6 +17,7 @@ import { restartSystem } from '@/api/status';
 import { formatTime, cn } from '@/lib/utils';
 import PlatformSetupQR from './PlatformSetupQR';
 import PlatformManualForm from './PlatformManualForm';
+import ProjectMessageTriggers from './ProjectMessageTriggers';
 import { platformMeta } from '@/lib/platformMeta';
 
 const PLATFORM_OPTIONS: { key: string; label: string; color: string; abbr: string; qr?: boolean }[] = [
@@ -61,7 +62,7 @@ const MODE_OPTIONS_BY_AGENT: Record<string, { value: string; label: string }[]> 
 
 const isQRPlatform = (type: string) => type === 'feishu' || type === 'lark' || type === 'weixin';
 
-type Tab = 'overview' | 'providers' | 'heartbeat' | 'workspaces' | 'settings';
+type Tab = 'overview' | 'providers' | 'heartbeat' | 'workspaces' | 'messageTriggers' | 'settings';
 
 export default function ProjectDetail() {
   const { t } = useTranslation();
@@ -344,6 +345,7 @@ export default function ProjectDetail() {
     { key: 'providers', icon: Zap },
     { key: 'heartbeat', icon: Heart },
     { key: 'workspaces', icon: FolderTree },
+    { key: 'messageTriggers', icon: ListFilter },
     { key: 'settings', icon: Settings },
   ];
 
@@ -363,11 +365,12 @@ export default function ProjectDetail() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {tabs.map(({ key, icon: Icon }) => (
           <button
             key={key}
             onClick={() => setTab(key)}
+            aria-pressed={tab === key}
             className={cn(
               'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
               tab === key
@@ -705,6 +708,10 @@ export default function ProjectDetail() {
             </>
           )}
         </div>
+      )}
+
+      {tab === 'messageTriggers' && project && (
+        <ProjectMessageTriggers key={project.name} project={project} />
       )}
 
       {tab === 'settings' && project && (
