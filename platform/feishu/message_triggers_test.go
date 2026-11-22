@@ -55,6 +55,34 @@ func TestFeishuMessageTriggers_GroupHistoryAndOriginalSession(t *testing.T) {
 	}
 }
 
+func TestFeishuMessageTriggers_PrivateChatPreservesReplyAndSession(t *testing.T) {
+	messages := make(chan *core.Message, 2)
+	p := newGroupHistoryTestPlatform(func(_ core.Platform, msg *core.Message) { messages <- msg })
+	p.SetMessageTriggerGroups([]string{"oc_allowed"})
+	send := func(messageID string) *core.Message {
+		event := makeGroupHistoryEvent(t, messageID, "ou_alice", "text", `{"text":"deploy"}`, "oc_allowed", "", false)
+		event.Event.Message.ChatType = stringPtr("p2p")
+		if err := p.onMessage(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+		return awaitGroupHistoryMessage(t, messages)
+	}
+	ordinary := send("om_private_ordinary")
+	if ordinary.Trigger != nil {
+		t.Fatalf("group scope produced a private trigger: %+v", ordinary.Trigger)
+	}
+
+	p.SetMessageTriggerPrivateChats(true)
+	triggered := send("om_private_triggered")
+	if triggered.Trigger == nil || !triggered.Trigger.PrivateChat || triggered.Trigger.RuleOnly ||
+		triggered.Trigger.Body != "deploy" || triggered.SessionKey != ordinary.SessionKey {
+		t.Fatalf("private trigger did not preserve text or routing: %#v", triggered)
+	}
+	if _, err := p.TriggerReplyContext(triggered); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFeishuMessageTriggers_PostBodyExcludesAttachmentNotice(t *testing.T) {
 	messages := make(chan *core.Message, 1)
 	p := newGroupHistoryTestPlatform(func(_ core.Platform, msg *core.Message) { messages <- msg })

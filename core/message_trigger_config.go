@@ -343,8 +343,6 @@ func (r MessageTriggerRule) validate(platforms []string, model MessageTriggerMod
 		return fmt.Errorf("select a supported channel configured for this project")
 	case len(r.Groups) == 0:
 		return fmt.Errorf("at least one condition group is required")
-	case len(r.groupsInScope) == 0:
-		return fmt.Errorf("at least one group ID condition is required")
 	case r.Action != "agent" && r.Action != "shell":
 		return fmt.Errorf("action must be agent or shell")
 	case r.Action == "shell" && r.Command == "":

@@ -31,14 +31,24 @@ func (p *Platform) SetMessageTriggerGroups(groups []string) {
 	p.messageTriggerGroups = slices.Clone(groups)
 }
 
+func (p *Platform) SetMessageTriggerPrivateChats(enabled bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.messageTriggerPrivateChats = enabled
+}
+
 func (p *Platform) triggerEvent(msg *models.Message) *core.MessageTriggerEvent {
 	if msg.From.ID <= 0 || msg.From.IsBot || isCommand(msg) ||
 		(msg.Text == "" && (msg.Caption == "" || (len(msg.Photo) == 0 && msg.Document == nil))) {
 		return nil
 	}
 	chatID := strconv.FormatInt(msg.Chat.ID, 10)
+	privateChat := msg.Chat.Type == models.ChatTypePrivate
 	p.mu.RLock()
-	selected := slices.Contains(p.messageTriggerGroups, chatID)
+	selected := p.messageTriggerPrivateChats
+	if !privateChat {
+		selected = slices.Contains(p.messageTriggerGroups, chatID)
+	}
 	self := p.selfUser
 	p.mu.RUnlock()
 	if !selected {
@@ -49,11 +59,12 @@ func (p *Platform) triggerEvent(msg *models.Message) *core.MessageTriggerEvent {
 	directMention := telegramMentionsBot(ids, self)
 	if directMention {
 		body = strings.TrimSpace(renderMessageText(body, entities, self, false))
-	} else if telegramReplyToBot(msg, self) {
+	} else if !privateChat && telegramReplyToBot(msg, self) {
 		return nil
 	}
 	return &core.MessageTriggerEvent{
 		ChatID: chatID, SenderIDs: telegramUserIDs(msg.From), MentionedIDs: ids, Body: body,
+		PrivateChat:      privateChat,
 		BotMentionKnown:  complete && self != nil && self.ID > 0 && self.Username != "",
 		DirectBotMention: directMention,
 	}

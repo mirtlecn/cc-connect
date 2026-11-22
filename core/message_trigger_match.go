@@ -6,16 +6,47 @@ import (
 	"time"
 )
 
-func (r MessageTriggerRule) watches(platform, chatID string) bool {
-	return r.Enabled && r.Platform == platform && slices.Contains(r.groupsInScope, chatID)
+func (r MessageTriggerRule) watches(platform string, event *MessageTriggerEvent) bool {
+	if !r.Enabled || r.Platform != platform {
+		return false
+	}
+	if event.PrivateChat {
+		return len(r.groupsInScope) == 0
+	}
+	return slices.Contains(r.groupsInScope, event.ChatID)
 }
 
 func (r MessageTriggerRule) matchesGroups(event *MessageTriggerEvent, at time.Time) bool {
 	return matchTriggerItems(r.GroupMatch, r.Groups, func(group MessageTriggerGroup) bool {
-		return matchTriggerItems(group.Match, group.Conditions, func(condition MessageTriggerCondition) bool {
-			return condition.matches(event, at)
-		})
+		return group.matches(event, at)
 	})
+}
+
+func (g MessageTriggerGroup) matches(event *MessageTriggerEvent, at time.Time) bool {
+	return matchTriggerItems(g.Match, g.Conditions, func(condition MessageTriggerCondition) bool {
+		return condition.matches(event, at)
+	})
+}
+
+// captureGroups keeps each regular expression's numbering independent. A nil
+// result means there is no capturing regex, so existing shell syntax is kept.
+func (r MessageTriggerRule) captureGroups(event *MessageTriggerEvent, at time.Time) []string {
+	var captures []string
+	for _, group := range r.Groups {
+		matched := group.matches(event, at)
+		for _, condition := range group.Conditions {
+			if condition.compiled == nil || condition.compiled.NumSubexp() == 0 {
+				continue
+			}
+			captures = []string{}
+			if matched {
+				if submatches := condition.compiled.FindStringSubmatch(event.Body); submatches != nil {
+					return submatches[1:]
+				}
+			}
+		}
+	}
+	return captures
 }
 
 func (c MessageTriggerCondition) matches(event *MessageTriggerEvent, at time.Time) bool {

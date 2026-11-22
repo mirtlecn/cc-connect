@@ -58,6 +58,30 @@ func TestTelegramMessageTriggers_NativeIdentityAndGroupRouting(t *testing.T) {
 	if got == nil || got.Trigger != nil || got.SessionKey != route || !strings.Contains(got.ExtraContent, "a bot answer") {
 		t.Fatalf("quoted bot answer did not preserve the original route: %#v", got)
 	}
+
+	msg.Chat = models.Chat{ID: 7, Type: models.ChatTypePrivate}
+	msg.MessageThreadID = 0
+	got = nil
+	p.handleMessage(context.Background(), msg)
+	if got == nil || got.Trigger != nil || got.SessionKey != "telegram:7:7" {
+		t.Fatalf("private chat without trigger subscription = %#v", got)
+	}
+
+	p.SetMessageTriggerPrivateChats(true)
+	got = nil
+	p.handleMessage(context.Background(), msg)
+	if got == nil || got.Trigger == nil || !got.Trigger.PrivateChat || got.Trigger.RuleOnly || got.Trigger.ChatID != "7" ||
+		got.Trigger.Body != msg.Text || got.SessionKey != "telegram:7:7" || !strings.Contains(got.ExtraContent, "a bot answer") {
+		t.Fatalf("private reply to bot did not preserve the source and route: %#v", got)
+	}
+
+	msg.Text = "/status"
+	msg.Entities = []models.MessageEntity{{Type: models.MessageEntityTypeBotCommand, Length: len(msg.Text)}}
+	got = nil
+	p.handleMessage(context.Background(), msg)
+	if got == nil || got.Trigger != nil || got.Content != "/status" {
+		t.Fatalf("private slash command was captured by a trigger: %#v", got)
+	}
 }
 
 func TestTelegramMessageTriggers_BodyBeforeLinkAndReplyEnrichment(t *testing.T) {

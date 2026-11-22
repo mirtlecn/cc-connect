@@ -3305,7 +3305,12 @@ func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *Messag
 			return
 		}
 		if trigger.Prompt != "" {
-			agentPrefix = trigger.Prompt + "\n\n"
+			prompt, err := expandMessageTriggerPrompt(trigger.Prompt, msg.Trigger.Body, msg.triggerCaptures)
+			if err != nil {
+				e.replyToMessageTrigger(p, msg.triggerReplyCtx, e.i18n.Tf(MsgError, err), e.commandWorkDir(agent, msg))
+				return
+			}
+			agentPrefix = prompt + "\n\n"
 			msg.Content = agentPrefix + msg.Content
 		}
 		msg.finishProcessingFeedback(MessageProcessingHandOff)

@@ -27,6 +27,12 @@ type messageTriggerConfirmation struct {
 func (e *Engine) requestMessageTriggerConfirmation(p Platform, msg *Message, rule *MessageTriggerRule) {
 	platform, supported := p.(MessageTriggerConfirmationPlatform)
 	adminIDs := e.messageTriggerAdmins()
+	// The confirmation card is sent to the source chat. In a private chat
+	// only its sender can see and resolve it.
+	if msg.Trigger.PrivateChat && !matchesTriggerIDs(adminIDs, []string{msg.UserID}) {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgMessageTriggerAdminOnly))
+		return
+	}
 	if !supported || len(adminIDs) == 0 {
 		slog.Warn("message trigger: approval unavailable", "project", e.name, "platform", p.Name(),
 			"rule", rule.Name, "interactive_buttons", supported, "explicit_admin_required", true)

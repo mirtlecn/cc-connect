@@ -129,20 +129,21 @@ type Platform struct {
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
 
-	mu                   sync.RWMutex
-	bot                  telegramBot
-	selfUser             *models.User
-	messageTriggerGroups []string // guarded by mu
-	handler              core.MessageHandler
-	lifecycleHandler     core.PlatformLifecycleHandler
-	cancel               context.CancelFunc
-	stopping             bool
-	generation           uint64
-	unavailableNotified  bool
-	everConnected        bool
-	newBot               botFactory
-	newBackoffTimer      func(time.Duration) backoffTimer
-	newTypingTicker      func(time.Duration) typingTicker
+	mu                         sync.RWMutex
+	bot                        telegramBot
+	selfUser                   *models.User
+	messageTriggerGroups       []string // guarded by mu
+	messageTriggerPrivateChats bool     // guarded by mu
+	handler                    core.MessageHandler
+	lifecycleHandler           core.PlatformLifecycleHandler
+	cancel                     context.CancelFunc
+	stopping                   bool
+	generation                 uint64
+	unavailableNotified        bool
+	everConnected              bool
+	newBot                     botFactory
+	newBackoffTimer            func(time.Duration) backoffTimer
+	newTypingTicker            func(time.Duration) typingTicker
 
 	triggerConfirmationHandler func(id, chatID, userID string, approved bool) (feedback string, resolved bool) // guarded by mu
 }
@@ -456,9 +457,11 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 
 	chatName := ""
 	var trigger *core.MessageTriggerEvent
+	if isGroup || msg.Chat.Type == models.ChatTypePrivate {
+		trigger = p.triggerEvent(msg)
+	}
 	if isGroup {
 		chatName = msg.Chat.Title
-		trigger = p.triggerEvent(msg)
 		if !p.groupReplyAll && !p.isDirectedAtBot(msg) {
 			if trigger == nil || !trigger.BotMentionKnown || trigger.DirectBotMention {
 				return

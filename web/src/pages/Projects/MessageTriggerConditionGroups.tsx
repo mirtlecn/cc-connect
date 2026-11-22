@@ -65,20 +65,19 @@ function serializeCondition(draft: ConditionDraft): MessageTriggerCondition | un
 }
 
 export function serializeGroups(groups: GroupDraft[]): MessageTriggerGroup[] | null {
+  if (!groups.length) return null;
   const result: MessageTriggerGroup[] = [];
-  let hasGroupCondition = false;
   for (const group of groups) {
     if (!group.conditions.length) return null;
     const conditions: MessageTriggerCondition[] = [];
     for (const draft of group.conditions) {
       const condition = serializeCondition(draft);
       if (!condition) return null;
-      if (condition.type === 'group') hasGroupCondition = true;
       conditions.push(condition);
     }
     result.push({ match: group.match, conditions });
   }
-  return hasGroupCondition ? result : null;
+  return result;
 }
 
 function MatchSelect({ label, value, onChange }: { label: string; value: MessageTriggerMatch; onChange: (match: MessageTriggerMatch) => void }) {

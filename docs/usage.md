@@ -965,26 +965,26 @@ Claude Code auto-creates the cron job. For other agents that rely on memory file
 
 ## Message Triggers
 
-Message triggers run a project action when a group message matches a rule. Open **Projects → your project → Message triggers** in the Web dashboard, or add `[[projects.message_triggers]]` entries under the existing project in `config.toml`. If Feishu and Telegram are configured in separate projects, open each project separately to manage its rules.
+Message triggers run a project action when a message in a group or private chat matches a rule. Open **Projects → your project → Message triggers** in the Web dashboard, or add `[[projects.message_triggers]]` entries under the existing project in `config.toml`. If Feishu and Telegram are configured in separate projects, open each project separately to manage its rules.
 
-The rule's platform must already be configured for the project. The bot must receive ordinary group messages in the selected groups.
+The rule's platform must already be configured for the project. For group-chat rules, the bot must receive ordinary messages in the selected groups.
 
-- **Feishu or Lark** requires the published `im:message.group_msg` permission and the `im.message.receive_v1` event. For confirmation buttons, subscribe to `card.action.trigger` as well. [Feishu setup](./feishu.md)
+- **Feishu or Lark** requires a subscription to the `im.message.receive_v1` event. For group-chat rules, publish the `im:message.group_msg` permission. For confirmation buttons, subscribe to `card.action.trigger` as well. [Feishu setup](./feishu.md)
 - **Telegram** delivers ordinary group messages to bot administrators or to bots with Group Privacy disabled. Re-add the bot to the group after changing its privacy setting. [Telegram Privacy Mode](https://core.telegram.org/bots/features#privacy-mode)
 
 ### Rule order and matching
 
-A rule can have several condition groups. `group_match` combines the groups and defaults to `or`. Each group's `match` combines its conditions and defaults to `and`. At either level, `and` requires every item to match and `or` requires any one item.
+A rule needs at least one condition group with at least one condition in each. `group_match` combines the groups and defaults to `or`. Each group's `match` combines its conditions and defaults to `and`. At either level, `and` requires every item to match and `or` requires any one item.
 
 - `group`, `sender`, and `mentioned` match the chat, sender, or a mentioned user by ID. Enter the IDs as `values`. Any ID in the list matches. For senders and mentioned users, Telegram also accepts `@username` where the event supplies it.
 - `regex` matches the original message text. Enter a Go regular expression (RE2) as `value`. Matching is case-sensitive by default. A pattern such as `(?i:incident|outage)` ignores case.
 - `time_range` matches a daily time range in the local time zone of the machine running cc-connect. Enter `start` and `end` in 24-hour `HH:MM` format. The start is included, the end is excluded, and the two times must differ. An end earlier than the start crosses midnight. In the Web editor, add **Daily time range** to a condition group. It uses the same `and` or `or` as the other conditions in the group.
 
-Every rule needs at least one `group` condition. The bot only watches the chats listed by the rule's `group` conditions, subject to the platform's existing access filters. Each `group` condition also participates in its group's logic. A rule with just a `group` condition matches ordinary messages from those chats. Use `and` when the message must come from a specified chat and match a regex.
+A rule with `group` conditions applies only to the group chats listed in those conditions. A rule without any `group` condition applies only to private chats. The platform's existing access filters still apply. Each `group` condition also participates in its group's logic. A rule with just a `group` condition matches ordinary messages from those chats. Use `and` when the message must come from a specified chat and match a regex.
 
 Existing flat rules still load. Group and identity requirements become grouped conditions, and keywords become case-insensitive literal regular expressions. Legacy confirmation settings migrate to manual mode. Legacy intent conditions migrate to intent mode, with manual mode taking precedence when both were used. Saving writes the new rule structure.
 
-Ordinary group messages, including direct mentions of the bot, are checked against trigger rules from the bottom of the list upward. A matching rule handles the message. An unmatched direct mention starts a normal conversation turn. Slash commands still use the command handler.
+Ordinary messages in group and private chats, including direct mentions of the bot, are checked against trigger rules from the bottom of the list upward. A matching rule handles the message. An unmatched private message or direct mention falls back to normal conversation. Slash commands still use the command handler.
 
 With `group_chat_history_share` enabled, Feishu and Lark retain and send up to 10 pending context messages per group or thread by default. Set the platform option `group_chat_history_limit` to a positive integer to change both limits. Omit it or use `0` to use 10. The three most recent messages with images can contribute up to six images in total. Older images, images beyond the limit, and failed downloads appear as `[image]`. [Feishu group context settings](./feishu.md)
 
@@ -1083,17 +1083,34 @@ The response must be a JSON object containing only `decision` and `reason`. The 
 
 ### Actions, confirmation, and CC
 
-- `action = "agent"` uses the project's existing Agent session, queue, and reply display settings. Set `prompt` to prepend instructions. The final reply quotes the original group message and mentions its sender.
-- `action = "shell"` runs the fixed `command` on the machine running cc-connect, in the project's resolved working directory. It uses the configured shell, has a 60-second timeout, and replies to the original group message with standard output and standard error (stdout and stderr). The incoming message text stays out of the command.
-- Manual mode and a model decision of `confirm` send a **Yes / No** prompt quoting the original message. A `cc` line mentions explicit administrators for that platform in the project's `admin_from`. Only administrators authorized by `admin_from` can decide. Enter their actual platform user IDs, which they can find with the bot's `/whoami` command. Use Feishu or Lark OpenIDs (`ou_…`) or positive Telegram user IDs. The wildcard `*` cannot identify an administrator to mention. A request expires after five minutes, when the project's rules are reloaded or edited, or when the process restarts.
+- `action = "agent"` uses the project's existing Agent session, queue, and reply display settings. Set `prompt` to prepend instructions. The final reply quotes the original message and mentions its sender in group chats.
+- `action = "shell"` runs `command` on the machine running cc-connect, in the project's resolved working directory. It uses the configured shell, has a 60-second timeout, and replies to the original message with standard output and standard error (stdout and stderr).
+- Manual mode and a model decision of `confirm` require an administrator listed in the project's `admin_from` to choose **Yes / No**. In groups, the prompt quotes the original message and includes a `cc` line mentioning those administrators. In private chats, the prompt is available to the sender when they are a listed administrator. Other senders receive a notice about the administrator requirement. Use `/whoami` to find each administrator's actual platform ID. Use Feishu or Lark OpenIDs (`ou_…`) or positive Telegram user IDs. The wildcard `*` cannot identify an administrator to mention. A request expires after five minutes, when the project's rules are reloaded or edited, or when the process restarts.
 - `cc_enabled = true` adds a `cc` line with native mentions for `cc_user_ids` to the final reply. Enter at least one platform user ID when enabled. Turning it off keeps the IDs for later use. The confirmation prompt gets its recipients from `admin_from` independently.
 
-Trigger status appears as a reaction on the original group message. Agent actions use the project's existing Agent reactions.
+Trigger status appears as a reaction on the original message. Agent actions use the project's existing Agent reactions.
 
 - **Feishu or Lark** uses `reaction_emoji` while processing (`OnIt` by default), `CrossMark` for rejection, timeout, a model decision of `no`, or Shell failure, and `done_emoji` for Shell success.
 - **Telegram** uses ⚡ while processing, 👎 on rejection or failure, and 👍 on Shell success when `enable_reactions` is on.
 
 The Web dashboard saves rules to `config.toml` and applies them immediately. After editing the file directly, reload configuration from the dashboard or call `POST /api/v1/reload`. The rule endpoints accept the configured management token, or local same-origin requests when the management token is unset.
+
+### Message variables in actions
+
+Agent prompts and Shell commands support two forms of message variables.
+
+- Use any positive group number, such as `$1`, `$3`, or `$10`, to refer to a regex capture. Among the condition groups that matched, cc-connect uses the first matching regex with capture groups in configuration order.
+- `${message}` inserts the full current message body as seen by the rules. It is independent of group context and quoted messages, and works for rules with no capture groups.
+
+For a message that begins with `帮我记录：` and has a task and a deadline on the next two lines, add this condition to the rule.
+
+```toml
+[[projects.message_triggers.groups.conditions]]
+type = "regex"
+value = '^帮我记录[：:]\r?\n([^\r\n]+)\r?\n([^\r\n]+)$'
+```
+
+For an Agent action, set `prompt = "Task $1\nDeadline $2"`. For a Shell action, set `command = "add_todo $1 $2"`. To pass the full current message, set `command = "log_message ${message}"`. Write each Shell placeholder as a standalone argument without shell quotes. Its value becomes one argument, including when it contains spaces or line breaks. Shell variable arguments are supported in `sh`, `bash`, `zsh`, and `fish` with `run_as_user` unset or empty. Use static commands with PowerShell or `cmd.exe`.
 
 ---
 

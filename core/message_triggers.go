@@ -10,10 +10,14 @@ import (
 	"time"
 )
 
-// MessageTriggerPlatform opts a platform into group message rules and native source replies.
+// MessageTriggerPlatform opts a platform into message rules and native source replies.
 type MessageTriggerPlatform interface {
 	SetMessageTriggerGroups(groups []string)
 	TriggerReplyContext(msg *Message) (any, error)
+}
+
+type messageTriggerPrivateChatPlatform interface {
+	SetMessageTriggerPrivateChats(enabled bool)
 }
 
 type messageTriggerCCPlatform interface {
@@ -71,6 +75,7 @@ func (r *messageTriggerReply) withCC(p Platform) any {
 // MessageTriggerEvent records identities from the platform event, independently of session routing.
 type MessageTriggerEvent struct {
 	ChatID           string
+	PrivateChat      bool
 	Body             string
 	SenderIDs        []string
 	MentionedIDs     []string
@@ -145,12 +150,17 @@ func (e *Engine) applyMessageTriggers(rules []MessageTriggerRule, model MessageT
 	for _, platform := range e.platforms {
 		if triggers, ok := platform.(MessageTriggerPlatform); ok {
 			var groups []string
+			privateChats := false
 			for _, rule := range normalized {
 				if rule.Enabled && rule.Platform == platform.Name() {
 					groups = append(groups, rule.groupsInScope...)
+					privateChats = privateChats || (len(rule.Groups) > 0 && len(rule.groupsInScope) == 0)
 				}
 			}
 			triggers.SetMessageTriggerGroups(cleanTriggerList(groups))
+			if private, ok := platform.(messageTriggerPrivateChatPlatform); ok {
+				private.SetMessageTriggerPrivateChats(privateChats)
+			}
 		}
 	}
 }
@@ -177,7 +187,7 @@ func (e *Engine) matchMessageTrigger(p Platform, msg *Message, at time.Time, eva
 	var input *triggerIntentInput
 	for i := len(state.rules) - 1; i >= 0; i-- {
 		rule := &state.rules[i]
-		if !rule.watches(p.Name(), event.ChatID) || !rule.matchesGroups(event, at) {
+		if !rule.watches(p.Name(), event) || !rule.matchesGroups(event, at) {
 			continue
 		}
 		// Deduplicate before a model request and keep the same claim while checking
@@ -231,6 +241,13 @@ func (e *Engine) matchMessageTrigger(p Platform, msg *Message, at time.Time, eva
 			return nil, false
 		}
 		msg.triggerReason = reason
+		template := rule.Prompt
+		if rule.Action == "shell" {
+			template = rule.Command
+		}
+		if messageTriggerActionReference.MatchString(template) {
+			msg.triggerCaptures = rule.captureGroups(event, at)
+		}
 		return rule, false
 	}
 	return nil, false
@@ -284,7 +301,7 @@ func (e *Engine) mayEvaluateMessageIntent(p Platform, msg *Message, at time.Time
 	event := msg.Trigger
 	for i := len(state.rules) - 1; i >= 0; i-- {
 		rule := state.rules[i]
-		if rule.watches(p.Name(), event.ChatID) && rule.matchesGroups(event, at) {
+		if rule.watches(p.Name(), event) && rule.matchesGroups(event, at) {
 			return rule.TriggerMode == "intent"
 		}
 	}

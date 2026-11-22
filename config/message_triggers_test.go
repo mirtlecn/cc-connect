@@ -477,7 +477,7 @@ func TestMessageTriggerConfigRejectsInvalidRules(t *testing.T) {
 		groups   []core.MessageTriggerGroup
 		wantErr  string
 	}{
-		{"requires explicit group", "alpha", "lark", triggerTestGroup(core.MessageTriggerCondition{Type: "regex", Value: "ping"}), "group"},
+		{"requires a condition group", "alpha", "lark", nil, "condition group"},
 		{"channel enabled in another project", "beta", "lark", triggerTestGroup(core.MessageTriggerCondition{Type: "group", Values: []string{"oc_alpha"}}), "channel configured for this project"},
 		{"channel does not support triggers", "beta", "slack", triggerTestGroup(core.MessageTriggerCondition{Type: "group", Values: []string{"C123"}}), "channel configured for this project"},
 		{"requires a condition in the group", "alpha", "lark", triggerTestGroup(), "condition"},
@@ -588,12 +588,14 @@ func TestMessageTriggerConfigSavesIntentModeWithoutManualAdministrators(t *testi
 	rule := current[0]
 	rule.TriggerMode = "intent"
 	rule.IntentPrompt = "Reply only to maintenance requests."
+	rule.Groups = triggerTestGroup(core.MessageTriggerCondition{Type: "regex", Value: "maintenance"})
 	saved, _, err := SaveProjectMessageTriggers("beta", core.MessageTriggerRulesRevision(current), []core.MessageTriggerRule{rule})
 	if err != nil {
 		t.Fatalf("save intent rule: %v", err)
 	}
 	rules, _ := getMessageTriggerRules(t, "beta")
 	if len(rules) != 1 || rules[0].TriggerMode != "intent" || rules[0].IntentPrompt != rule.IntentPrompt ||
+		!reflect.DeepEqual(rules[0].Groups, saved[0].Groups) ||
 		core.MessageTriggerRulesRevision(rules) != core.MessageTriggerRulesRevision(saved) {
 		t.Fatalf("loaded intent rule = %#v, saved = %#v", rules, saved)
 	}

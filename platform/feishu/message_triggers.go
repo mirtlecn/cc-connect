@@ -30,10 +30,23 @@ func (p *Platform) SetMessageTriggerGroups(groups []string) {
 	p.messageTriggerGroups = slices.Clone(groups)
 }
 
-func (p *Platform) watchesTriggerGroup(chatID string) bool {
+func (p *Platform) SetMessageTriggerPrivateChats(enabled bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.messageTriggerPrivateChats = enabled
+}
+
+func (p *Platform) watchesTriggerChat(chatType, chatID string) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return slices.Contains(p.messageTriggerGroups, chatID)
+	switch chatType {
+	case "group":
+		return slices.Contains(p.messageTriggerGroups, chatID)
+	case "p2p":
+		return p.messageTriggerPrivateChats
+	default:
+		return false
+	}
 }
 
 func feishuTriggerIDs(id *larkim.UserId) []string {
@@ -51,16 +64,18 @@ func feishuTriggerIDs(id *larkim.UserId) []string {
 
 func (p *Platform) triggerEvent(msg *larkim.EventMessage, senderID *larkim.UserId, senderType, botOpenID string) *core.MessageTriggerEvent {
 	chatID := stringValue(msg.ChatId)
-	if stringValue(msg.ChatType) != "group" || !isGroupHistoryMessageType(stringValue(msg.MessageType)) ||
-		!p.watchesTriggerGroup(chatID) || senderType != "user" {
+	chatType := stringValue(msg.ChatType)
+	if !isGroupHistoryMessageType(stringValue(msg.MessageType)) ||
+		!p.watchesTriggerChat(chatType, chatID) || senderType != "user" {
 		return nil
 	}
 	senderIDs := feishuTriggerIDs(senderID)
 	if len(senderIDs) == 0 {
 		return nil
 	}
+	privateChat := chatType == "p2p"
 	event := &core.MessageTriggerEvent{
-		ChatID: chatID, SenderIDs: senderIDs, BotMentionKnown: botOpenID != "",
+		ChatID: chatID, PrivateChat: privateChat, SenderIDs: senderIDs, BotMentionKnown: privateChat || botOpenID != "",
 		DirectBotMention: botOpenID != "" && isBotMentioned(msg.Mentions, botOpenID),
 	}
 	mentionKeys := make(map[string]struct{}, len(msg.Mentions))

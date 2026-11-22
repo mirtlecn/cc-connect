@@ -1098,12 +1098,13 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # enclosure_style = "code"          # none | bracket | angle | fullwidth | code
 
 # Message Triggers / 消息触发任务
-# Feishu/Lark requires im:message.group_msg. Telegram bots must receive ordinary group messages.
-# 飞书/Lark 需发布 im:message.group_msg 权限。Telegram 机器人需能接收普通群消息。
-# Rules match ordinary group messages from bottom to top, including direct bot mentions.
-# 普通群消息按规则从下往上匹配，包括直接 @ 机器人的消息。未命中的 @ 消息进入普通对话。
-# At least one group condition is required. Only chats named by those conditions are watched.
-# 至少配置一个 group 条件。机器人只监听这些条件列出的群。
+# Group rules require im:message.group_msg on Feishu/Lark and ordinary group messages on Telegram.
+# 匹配群聊时，飞书/Lark 需发布 im:message.group_msg 权限，Telegram 机器人需能接收普通群消息。
+# Rules match ordinary group and private messages from bottom to top, including direct bot mentions.
+# 群聊和私聊的普通消息按规则从下往上匹配，包括直接 @ 机器人的消息。未命中的私聊或直接 @ 消息进入普通对话。
+# Each rule needs a non-empty condition group. With group conditions, it applies only to the listed groups.
+# 每条规则至少配置一个非空条件组。含 group 条件的规则只适用于这些条件列出的群。
+# For a private-chat rule, omit all group conditions. / 仅匹配私聊时，省略所有 group 条件。
 # A group condition also participates in its group's AND/OR logic.
 # group 条件也参与组内的 AND/OR 判断。
 # [[projects.message_triggers]]
@@ -1147,7 +1148,7 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 #
 # For a Shell action, use action = "shell" and command = "echo trigger-ok" in place of prompt.
 # Shell 动作使用 action = "shell" 和 command = "echo trigger-ok"，并移除 prompt。
-# Shell runs locally and replies with stdout and stderr. / 命令在本机执行，标准输出和标准错误回复到原群。
+# Shell runs locally and replies with stdout and stderr. / 命令在本机执行，标准输出和标准错误回复到原会话。
 
 # Feishu / Lark / 飞书
 # 1. Create an app at https://open.feishu.cn / 在 https://open.feishu.cn 创建应用

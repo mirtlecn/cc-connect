@@ -131,7 +131,7 @@ export default function MessageTriggerEditor({ rule, platforms, saving, conflict
               </select>
             </Field>
             {draft.action === 'agent' ? (
-              <Field label={t('messageTriggers.prompt')}>
+              <Field label={t('messageTriggers.prompt')} hint={t('messageTriggers.promptHint')}>
                 <Textarea rows={3} value={draft.prompt} onChange={event => update('prompt', event.target.value)} />
               </Field>
             ) : (

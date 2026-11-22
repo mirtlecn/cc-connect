@@ -62,7 +62,7 @@ func TestMessageTriggerGroupsCombineIndependently(t *testing.T) {
 	}
 	operator := &MessageTriggerEvent{ChatID: "ops", Body: "contact", SenderIDs: []string{"operator"}, MentionedIDs: []string{"on-call"}}
 	at := time.Now()
-	if !rule.watches("test", "ops") || rule.watches("test", "other") || !rule.matchesGroups(operator, at) {
+	if !rule.watches("test", operator) || rule.watches("test", &MessageTriggerEvent{ChatID: "other"}) || !rule.matchesGroups(operator, at) {
 		t.Fatalf("OR failed to match the second group within scope")
 	}
 	rule.GroupMatch = "and"
@@ -150,6 +150,114 @@ func messageTriggerTestMessage(p Platform, id, content string, direct bool) *Mes
 	}
 }
 
+func TestMessageTriggerIsolatesPrivateChatsAndGroups(t *testing.T) {
+	p := newMessageTriggerTestPlatform()
+	agent := &cujAgent{}
+	e := NewEngine("trigger-chat-scope-project", agent, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	e.SetReplyFooterEnabled(false)
+	rules := []MessageTriggerRule{{
+		Name: "private task", Enabled: true, Platform: p.Name(), TriggerMode: "direct", Action: "agent",
+		Groups: []MessageTriggerGroup{{Match: "and", Conditions: []MessageTriggerCondition{
+			{Type: "regex", Value: "^run task$"},
+		}}},
+		Prompt: "private rule",
+	}, {
+		Name: "group task", Enabled: true, Platform: p.Name(), TriggerMode: "direct", Action: "agent",
+		Groups: []MessageTriggerGroup{{Match: "and", Conditions: []MessageTriggerCondition{
+			{Type: "group", Values: []string{"group"}}, {Type: "regex", Value: "^run task$"},
+		}}},
+		Prompt: "group rule",
+	}}
+	e.SetMessageTriggers(rules, MessageTriggerModel{})
+
+	otherGroup := messageTriggerTestMessage(p, "other-group", "run task", false)
+	otherGroup.SessionKey, otherGroup.Trigger.ChatID = "unwatched-group-session", "other"
+	e.ReceiveMessage(p, otherGroup)
+	if id := e.sessions.ActiveSessionID(otherGroup.SessionKey); id != "" {
+		t.Fatalf("unwatched group started agent session %q", id)
+	}
+
+	env := &cujEnv{t: t, plat: p.stubPlatformEngine}
+	for _, tc := range []struct {
+		id          string
+		privateChat bool
+		wantPrompt  string
+	}{
+		{id: "private-chat", privateChat: true, wantPrompt: "private rule\n\nrun task"},
+		{id: "watched-group", wantPrompt: "group rule\n\nrun task"},
+	} {
+		msg := messageTriggerTestMessage(p, tc.id, "run task", false)
+		msg.SessionKey, msg.Trigger.PrivateChat = tc.id, tc.privateChat
+		e.ReceiveMessage(p, msg)
+		env.waitFor("agent result for "+tc.id, 3*time.Second, func() bool {
+			return slices.Contains(p.getSent(), "source:"+tc.id+" -> ok")
+		})
+		agent.mu.Lock()
+		prompts := agent.sessions[len(agent.sessions)-1].getSentPrompts()
+		agent.mu.Unlock()
+		if !slices.Equal(prompts, []string{tc.wantPrompt}) {
+			t.Fatalf("%s prompt = %q, want %q", tc.id, prompts, tc.wantPrompt)
+		}
+	}
+
+	rules[0].TriggerMode = "manual"
+	e.SetAdminFrom("admin")
+	e.SetMessageTriggers(rules, MessageTriggerModel{})
+	denied := messageTriggerTestMessage(p, "private-denied", "run task", true)
+	denied.Trigger.PrivateChat = true
+	e.ReceiveMessage(p, denied)
+	if len(p.cards) != 0 || !slices.ContainsFunc(p.getSent(), func(reply string) bool {
+		return strings.Contains(reply, e.i18n.T(MsgMessageTriggerAdminOnly))
+	}) {
+		t.Fatalf("non-admin private chat should receive an error instead of a confirmation: %q", p.getSent())
+	}
+
+	admin := messageTriggerTestMessage(p, "private-admin", "run task", true)
+	admin.Trigger.PrivateChat = true
+	admin.UserID = "admin"
+	e.ReceiveMessage(p, admin)
+	if card := p.readCard(t); card.reply != "source:private-admin" {
+		t.Fatalf("private confirmation reply = %q", card.reply)
+	}
+}
+
+const messageTriggerCapturePattern = `^run task ([^|]+)\|([^|]+)\|(.)(.)(.)(.)(.)(.)(.)(.+)$`
+
+func TestMessageTriggerAgentExpandsCapturesAndSourceBody(t *testing.T) {
+	p := newMessageTriggerTestPlatform()
+	agent := &cujAgent{}
+	e := NewEngine("agent-template-project", agent, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	e.SetReplyFooterEnabled(false)
+	e.SetMessageTriggers([]MessageTriggerRule{{
+		Name: "agent task", Enabled: true, Platform: p.Name(), TriggerMode: "direct", Action: "agent",
+		Groups: []MessageTriggerGroup{{Match: "and", Conditions: []MessageTriggerCondition{
+			{Type: "group", Values: []string{"group"}}, {Type: "regex", Value: messageTriggerCapturePattern},
+		}}},
+		Prompt: "First: <$1>\nSecond: <$2>\nTenth: <$10>\nSource: <${message}>",
+	}}, MessageTriggerModel{})
+	first := `two words with ' and " and $HOME`
+	second := "first line\nsecond line ${message}"
+	tenth := "literal $2"
+	body := "run task " + first + "|" + second + "|1234567" + tenth
+	msg := messageTriggerTestMessage(p, "agent", body, false)
+	msg.Content = "platform-enriched text"
+	msg.ExtraContent = "quoted context"
+	e.ReceiveMessage(p, msg)
+	env := &cujEnv{t: t, plat: p.stubPlatformEngine}
+	env.waitFor("agent result quoting the source", 3*time.Second, func() bool {
+		return slices.Contains(p.getSent(), "source:agent -> ok")
+	})
+	agent.mu.Lock()
+	prompts := agent.sessions[0].getSentPrompts()
+	agent.mu.Unlock()
+	want := fmt.Sprintf("First: <%s>\nSecond: <%s>\nTenth: <%s>\nSource: <%s>\n\nquoted context\nplatform-enriched text", first, second, tenth, body)
+	if !slices.Equal(prompts, []string{want}) {
+		t.Fatalf("agent prompt = %q, want %q", prompts, want)
+	}
+}
+
 func TestMessageTriggerAdminConfirmationAndShell(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture uses POSIX printf")
@@ -157,6 +265,7 @@ func TestMessageTriggerAdminConfirmationAndShell(t *testing.T) {
 	p := newMessageTriggerTestPlatform()
 	e := NewEngine("confirm-project", &stubAgent{}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
 	t.Cleanup(func() { _ = e.Stop() })
+	e.SetShell("sh", "-c", "")
 	e.SetReplyFooterEnabled(true)
 	e.SetShowContextIndicator(true)
 	e.SetShowWorkdirIndicator(true)
@@ -164,12 +273,12 @@ func TestMessageTriggerAdminConfirmationAndShell(t *testing.T) {
 	rule := MessageTriggerRule{
 		Name: "shell task", Enabled: true, Platform: p.Name(), TriggerMode: "manual",
 		Groups: []MessageTriggerGroup{{Match: "and", Conditions: []MessageTriggerCondition{
-			{Type: "group", Values: []string{"group"}}, {Type: "regex", Value: "run task"},
+			{Type: "group", Values: []string{"group"}}, {Type: "regex", Value: messageTriggerCapturePattern},
 		}}},
-		Command: "printf 'configured-command'", Action: "shell",
+		Command: `printf '<%s>\n' $1 $2 $10 ${message}`, Action: "shell",
 	}
 	e.SetMessageTriggers([]MessageTriggerRule{rule}, MessageTriggerModel{})
-	e.ReceiveMessage(p, messageTriggerTestMessage(p, "reject", "run task", false))
+	e.ReceiveMessage(p, messageTriggerTestMessage(p, "reject", "run task denied|two|1234567ten", false))
 	rejected := p.readCard(t)
 	if rejected.reply != "source:reject" || !slices.Equal(rejected.admins, []string{"admin", "second-admin"}) || len(p.getSent()) != 0 {
 		t.Fatalf("wrong card routing or premature run: %+v messages=%v", rejected, p.getSent())
@@ -190,7 +299,14 @@ func TestMessageTriggerAdminConfirmationAndShell(t *testing.T) {
 	rule.CCEnabled = true
 	rule.CCUserIDs = []string{"one", "two"}
 	e.SetMessageTriggers([]MessageTriggerRule{rule}, MessageTriggerModel{})
-	e.ReceiveMessage(p, messageTriggerTestMessage(p, "approve", "run task; printf bypass", true))
+	first := `two words with ' and " and $HOME; printf bypass`
+	second := "first line\nsecond line ${message}"
+	tenth := "literal $2"
+	body := "run task " + first + "|" + second + "|1234567" + tenth
+	msg := messageTriggerTestMessage(p, "approve", body, true)
+	msg.Content = "platform-enriched text"
+	msg.ExtraContent = "quoted context"
+	e.ReceiveMessage(p, msg)
 	approved := p.readCard(t)
 	if _, resolved := p.confirm(approved.id, "group", "admin", true); !resolved {
 		t.Fatal("admin could not approve")
@@ -202,15 +318,53 @@ func TestMessageTriggerAdminConfirmationAndShell(t *testing.T) {
 	env.waitFor("configured shell result quoting the source", 3*time.Second, func() bool {
 		return len(p.getSent()) != 0
 	})
-	want := []string{"source:approve cc one two -> configured-command"}
+	want := []string{fmt.Sprintf("source:approve cc one two -> <%s>\n<%s>\n<%s>\n<%s>", first, second, tenth, body)}
 	if got := p.getSent(); !slices.Equal(got, want) {
 		t.Fatalf("shell reply with global footer enabled = %q, want %q", got, want)
 	}
 
-	e.ReceiveMessage(p, messageTriggerTestMessage(p, "recalled", "run task", false))
+	e.ReceiveMessage(p, messageTriggerTestMessage(p, "recalled", "run task recalled|two|1234567ten", false))
 	recalled := p.readCard(t)
 	e.ReceiveMessage(p, &Message{MessageID: "recalled", Platform: p.Name(), Recalled: true})
 	if _, resolved := p.confirm(recalled.id, "group", "admin", true); resolved {
 		t.Fatal("admin could approve a recalled source")
+	}
+}
+
+func TestMessageTriggerShellDoesNotRunWithoutMatchedCapture(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture uses POSIX printf")
+	}
+	p := newMessageTriggerTestPlatform()
+	e := NewEngine("missing-capture-project", &stubAgent{}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	e.SetShell("sh", "-c", "")
+	e.SetMessageTriggers([]MessageTriggerRule{{
+		Name: "shell task with alternatives", Enabled: true, Platform: p.Name(), TriggerMode: "direct", GroupMatch: "and",
+		Groups: []MessageTriggerGroup{
+			{Match: "and", Conditions: []MessageTriggerCondition{{Type: "group", Values: []string{"group"}}}},
+			{Match: "or", Conditions: []MessageTriggerCondition{
+				{Type: "regex", Value: `^run task (.+)$`}, {Type: "sender", Values: []string{"sender"}},
+			}},
+		},
+		Command: `printf 'command executed <%s>' $1`, Action: "shell",
+	}}, MessageTriggerModel{})
+	e.ReceiveMessage(p, messageTriggerTestMessage(p, "missing", "only the sender condition matches", false))
+	env := &cujEnv{t: t, plat: p.stubPlatformEngine}
+	env.waitFor("missing capture error", 3*time.Second, func() bool {
+		return len(p.getSent()) != 0
+	})
+	got := p.getSent()
+	if len(got) != 1 || !strings.Contains(got[0], "capture $1 is unavailable") || strings.Contains(got[0], "command executed") {
+		t.Fatalf("missing capture should prevent shell execution, got %q", got)
+	}
+}
+
+func TestMessageTriggerShellBindingsRequireArgumentPosition(t *testing.T) {
+	for _, command := range []string{`$1`, `printf fixed | "${message}"`, `printf fixed > $1`} {
+		_, _, err := bindMessageTriggerShell(command, "sh", "-c", []string{"words with spaces"}, "current message")
+		if err == nil || !strings.Contains(err.Error(), "argument to a fixed command") {
+			t.Errorf("binding %q = %v, want argument position error", command, err)
+		}
 	}
 }
