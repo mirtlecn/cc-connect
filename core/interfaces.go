@@ -235,6 +235,24 @@ type TypingIndicatorDone interface {
 	AddDoneReaction(replyCtx any)
 }
 
+// MessageProcessingOutcome describes how message feedback should end.
+type MessageProcessingOutcome uint8
+
+const (
+	MessageProcessingHandOff MessageProcessingOutcome = iota
+	MessageProcessingSucceeded
+	MessageProcessingFailed
+	MessageProcessingCancelled
+)
+
+// MessageProcessingFeedback shows progress and an outcome on the source
+// message. HandOff releases the indicator before regular Agent feedback starts.
+// The returned callback's receiptOwned flag keeps the existing OnAccepted
+// receipt when it shares a reaction with the processing indicator.
+type MessageProcessingFeedback interface {
+	StartMessageProcessingFeedback(ctx context.Context, replyCtx any) func(outcome MessageProcessingOutcome, receiptOwned bool)
+}
+
 // AtMentionSender is an optional interface for platforms that support @mention in
 // reply messages (e.g. DingTalk). Platforms that implement this interface can
 // include @user notifications when replying in group chats.

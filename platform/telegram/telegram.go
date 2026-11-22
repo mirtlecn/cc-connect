@@ -26,6 +26,8 @@ import (
 
 var telegramConvertAudioToOpus = core.ConvertAudioToOpus
 
+var _ core.MessageProcessingFeedback = (*Platform)(nil)
+
 func init() {
 	core.RegisterPlatform("telegram", New)
 }
@@ -34,6 +36,7 @@ type replyContext struct {
 	chatID             int64
 	threadID           int
 	messageID          int
+	receipt            func()
 	triggerMentionText string
 	triggerMentionURL  string
 	triggerCCUserIDs   []string
@@ -468,11 +471,12 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 	var onAccepted func()
 	if p.enableReactions {
 		chatID, messageID := msg.Chat.ID, msg.ID
-		react := func() { go p.reactToMessage(ctx, chatID, messageID, "⚡") }
+		receipt := sync.OnceFunc(func() { p.reactToMessage(ctx, chatID, messageID, "⚡") })
+		rctx.receipt = receipt
 		if trigger != nil && trigger.RuleOnly {
-			onAccepted = sync.OnceFunc(react)
+			onAccepted = func() { go receipt() }
 		} else {
-			react()
+			go receipt()
 		}
 	}
 	botName := p.botUsername()
@@ -656,12 +660,13 @@ func (p *Platform) messageHandler() core.MessageHandler {
 }
 
 // reactToMessage sets an emoji reaction on a Telegram message.
-// It is called asynchronously so it never blocks the message dispatch path.
 func (p *Platform) reactToMessage(ctx context.Context, chatID int64, messageID int, emoji string) {
 	bot, err := p.connectedBot("react")
 	if err != nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	if _, err := bot.SetMessageReaction(ctx, &tgbot.SetMessageReactionParams{
 		ChatID:    chatID,
 		MessageID: messageID,
@@ -671,6 +676,32 @@ func (p *Platform) reactToMessage(ctx context.Context, chatID int64, messageID i
 		}},
 	}); err != nil {
 		slog.Debug("telegram: set reaction failed", "error", err)
+	}
+}
+
+func (p *Platform) StartMessageProcessingFeedback(ctx context.Context, rctx any) func(core.MessageProcessingOutcome, bool) {
+	rc, ok := rctx.(replyContext)
+	if !p.enableReactions || !ok || rc.chatID == 0 || rc.messageID <= 0 {
+		return nil
+	}
+	// The receipt and in-progress indicator share Telegram's single reaction slot.
+	// Wait for the receipt here so it cannot overwrite a later outcome.
+	if rc.receipt != nil {
+		rc.receipt()
+	} else {
+		p.reactToMessage(ctx, rc.chatID, rc.messageID, "⚡")
+	}
+	var once sync.Once
+	return func(outcome core.MessageProcessingOutcome, _ bool) {
+		once.Do(func() {
+			resultCtx := context.WithoutCancel(ctx)
+			switch outcome {
+			case core.MessageProcessingSucceeded:
+				go p.reactToMessage(resultCtx, rc.chatID, rc.messageID, "👍")
+			case core.MessageProcessingFailed:
+				go p.reactToMessage(resultCtx, rc.chatID, rc.messageID, "👎")
+			}
+		})
 	}
 }
 

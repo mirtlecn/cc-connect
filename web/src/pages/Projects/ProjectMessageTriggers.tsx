@@ -120,9 +120,13 @@ export default function ProjectMessageTriggers({ project }: { project: ProjectDe
         <ul className="divide-y divide-gray-200 dark:divide-white/10" aria-busy={saving}>
           {rules.map((rule, index) => {
             const toggle = t(rule.enabled ? 'messageTriggers.disable' : 'messageTriggers.enable');
-            const expression = rule.groups?.map(group =>
-              `(${group.conditions.map(condition => t(conditionLabels[condition.type])).join(group.match === 'or' ? ' OR ' : ' AND ')})`,
-            ).join(rule.group_match === 'and' ? ' AND ' : ' OR ');
+            const expression = rule.groups?.map(group => {
+              const labels = group.conditions.map(condition => {
+                const label = t(conditionLabels[condition.type]);
+                return condition.type === 'time_range' ? `${label} ${condition.start}–${condition.end}` : label;
+              });
+              return `(${labels.join(group.match === 'or' ? ' OR ' : ' AND ')})`;
+            }).join(rule.group_match === 'and' ? ' AND ' : ' OR ');
             return (
               <li key={`${rule.name}-${index}`} className="flex flex-wrap items-center justify-between gap-3 py-3">
                 <div className="min-w-0 space-y-1.5">

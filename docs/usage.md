@@ -978,6 +978,7 @@ A rule can have several condition groups. `group_match` combines the groups and 
 
 - `group`, `sender`, and `mentioned` match the chat, sender, or a mentioned user by ID. Enter the IDs as `values`. Any ID in the list matches. For senders and mentioned users, Telegram also accepts `@username` where the event supplies it.
 - `regex` matches the original message text. Enter a Go regular expression (RE2) as `value`. Matching is case-sensitive by default. A pattern such as `(?i:incident|outage)` ignores case.
+- `time_range` matches a daily time range in the local time zone of the machine running cc-connect. Enter `start` and `end` in 24-hour `HH:MM` format. The start is included, the end is excluded, and the two times must differ. An end earlier than the start crosses midnight. In the Web editor, add **Daily time range** to a condition group. It uses the same `and` or `or` as the other conditions in the group.
 
 Every rule needs at least one `group` condition. The bot only watches the chats listed by the rule's `group` conditions, subject to the platform's existing access filters. Each `group` condition also participates in its group's logic. A rule with just a `group` condition matches ordinary messages from those chats. Use `and` when the message must come from a specified chat and match a regex.
 
@@ -1022,7 +1023,7 @@ type = "sender"
 values = ["ou_example_sender"]
 ```
 
-Add this Shell rule to a project with Telegram configured. It matches a message whose entire text is `status`, regardless of case.
+Add this Shell rule to a project with Telegram configured. It matches `status` as the entire message, regardless of case, from 22:00 to 06:00 the next day.
 
 ```toml
 [[projects.message_triggers]]
@@ -1043,6 +1044,11 @@ values = ["-1001234567890"]
 [[projects.message_triggers.groups.conditions]]
 type = "regex"
 value = '(?i)^status$'
+
+[[projects.message_triggers.groups.conditions]]
+type = "time_range"
+start = "22:00"
+end = "06:00"
 ```
 
 ### Trigger mode and the shared intent model
@@ -1074,6 +1080,11 @@ The response must be a JSON object containing only `decision` and `reason`. The 
 - `action = "shell"` runs the fixed `command` on the machine running cc-connect, in the project's resolved working directory. It uses the configured shell, has a 60-second timeout, and replies to the original group message with standard output and standard error (stdout and stderr). The incoming message text stays out of the command.
 - Manual mode and a model decision of `confirm` send a **Yes / No** prompt quoting the original message. A `cc` line mentions explicit administrators for that platform in the project's `admin_from`. Only administrators authorized by `admin_from` can decide. Enter their actual platform user IDs, which they can find with the bot's `/whoami` command. Use Feishu or Lark OpenIDs (`ou_…`) or positive Telegram user IDs. The wildcard `*` cannot identify an administrator to mention. A request expires after five minutes, when the project's rules are reloaded or edited, or when the process restarts.
 - `cc_enabled = true` adds a `cc` line with native mentions for `cc_user_ids` to the final reply. Enter at least one platform user ID when enabled. Turning it off keeps the IDs for later use. The confirmation prompt gets its recipients from `admin_from` independently.
+
+Trigger status appears as a reaction on the original group message. Agent actions use the project's existing Agent reactions.
+
+- **Feishu or Lark** uses `reaction_emoji` while processing (`OnIt` by default), `CrossMark` for rejection, timeout, a model decision of `no`, or Shell failure, and `done_emoji` for Shell success.
+- **Telegram** uses ⚡ while processing, 👎 on rejection or failure, and 👍 on Shell success when `enable_reactions` is on.
 
 The Web dashboard saves rules to `config.toml` and applies them immediately. After editing the file directly, reload configuration from the dashboard or call `POST /api/v1/reload`. The rule endpoints accept the configured management token, or local same-origin requests when the management token is unset.
 

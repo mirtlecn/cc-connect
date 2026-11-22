@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/chenhg5/cc-connect/core"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
@@ -17,6 +19,8 @@ import (
 
 const triggerConfirmationPrefix = "trigger-confirm:"
 const triggerConfirmationRouteKey = "trigger_route"
+const processingReactionTimeout = 5 * time.Second
+const failedProcessingEmoji = "CrossMark"
 
 var triggerMentionPlaceholder = regexp.MustCompile(`@_user_[0-9]+`)
 
@@ -196,6 +200,59 @@ func withTriggerCardResult(ctx context.Context, cardJSON string) (string, error)
 	body["elements"] = elements
 	encoded, err := json.Marshal(card)
 	return string(encoded), err
+}
+
+func (p *Platform) StartMessageProcessingFeedback(ctx context.Context, rctx any) func(core.MessageProcessingOutcome, bool) {
+	rc, ok := rctx.(replyContext)
+	if !ok || rc.messageID == "" {
+		return func(core.MessageProcessingOutcome, bool) {}
+	}
+	processingEmoji := p.reactionEmoji
+	var reactionID string
+	if processingEmoji != "" && !p.isMessageRecalled(rc.messageID) {
+		requestCtx, cancel := context.WithTimeout(ctx, processingReactionTimeout)
+		reactionID = p.addReactionWithEmojiContext(requestCtx, rc.messageID, processingEmoji)
+		cancel()
+	}
+
+	finish := func(outcome core.MessageProcessingOutcome, receiptOwned bool) {
+		receiptEmoji := ""
+		if receiptOwned && rc.receiptMessageID == rc.messageID {
+			receiptEmoji = rc.receiptEmoji
+		}
+		terminalEmoji := ""
+		switch outcome {
+		case core.MessageProcessingSucceeded:
+			terminalEmoji = p.doneEmoji
+		case core.MessageProcessingFailed:
+			terminalEmoji = failedProcessingEmoji
+		case core.MessageProcessingHandOff, core.MessageProcessingCancelled:
+		}
+		if terminalEmoji != "" && p.isMessageRecalled(rc.messageID) {
+			terminalEmoji = ""
+		}
+		if reactionID != "" && processingEmoji != terminalEmoji && processingEmoji != receiptEmoji {
+			requestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), processingReactionTimeout)
+			p.removeReactionWithContext(requestCtx, rc.messageID, reactionID)
+			cancel()
+		}
+		if terminalEmoji != "" && terminalEmoji != receiptEmoji && (reactionID == "" || terminalEmoji != processingEmoji) {
+			requestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), processingReactionTimeout)
+			defer cancel()
+			p.addReactionWithEmojiContext(requestCtx, rc.messageID, terminalEmoji)
+		}
+	}
+
+	var once sync.Once
+	return func(outcome core.MessageProcessingOutcome, receiptOwned bool) {
+		once.Do(func() {
+			if outcome == core.MessageProcessingHandOff {
+				finish(outcome, receiptOwned)
+				return
+			}
+			go finish(outcome, receiptOwned)
+		})
+	}
 }
 
 func (p *Platform) SetMessageTriggerConfirmationHandler(handler func(id, chatID, userID string, approved bool) (feedback string, resolved bool)) {

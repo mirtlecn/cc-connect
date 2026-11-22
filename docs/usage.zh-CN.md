@@ -889,6 +889,7 @@ Claude Code 会自动创建定时任务。对依赖记忆文件的其他 Agent�
 
 - `group`、`sender`、`mentioned` 分别匹配群、发件人和被 @ 的用户。用 `values` 填写 ID，同一条件内匹配任一 ID 即可。Telegram 的发件人和被 @ 用户条件也支持事件中带有的 `@用户名`。
 - `regex` 用 `value` 填写 Go 正则表达式（RE2），匹配原消息正文。默认区分大小写，可用 `(?i:incident|outage)` 忽略大小写。
+- `time_range` 按运行 cc-connect 的机器的本地时区匹配每天的时段。`start` 和 `end` 都用 24 小时制 `HH:MM`。包含开始时刻，不包含结束时刻，起止时间必须不同。结束时间早于开始时间时，时段跨午夜。可在 Web 编辑器的条件组里添加 **每天时段**，与组内其他条件一起按 `and` 或 `or` 判断。
 
 每条规则至少包含一个 `group` 条件。机器人只监听这条规则的所有 `group` 条件列出的群，渠道原有的访问限制仍然生效。`group` 条件也参与组内判断。只配置 `group` 时，列出的群内普通消息都符合条件。组内同时配置群和正则时，使用 `and` 要求两项都满足。
 
@@ -933,7 +934,7 @@ type = "sender"
 values = ["ou_example_sender"]
 ```
 
-Telegram Shell 规则添加到配置了 Telegram 的项目。以下示例匹配整条消息“状态”。
+将以下 Shell 规则添加到配置了 Telegram 的项目。它会在每天 22:00 至次日 06:00 匹配整条消息“状态”。
 
 ```toml
 [[projects.message_triggers]]
@@ -954,6 +955,11 @@ values = ["-1001234567890"]
 [[projects.message_triggers.groups.conditions]]
 type = "regex"
 value = '^状态$'
+
+[[projects.message_triggers.groups.conditions]]
+type = "time_range"
+start = "22:00"
+end = "06:00"
 ```
 
 ### 触发方式与共享意图模型
@@ -985,6 +991,11 @@ timeout_seconds = 10
 - `action = "shell"` 使用运行 cc-connect 的本机 Shell，在项目当前工作目录执行固定的 `command`，超时为 60 秒。群消息内容不会被拼入命令。标准输出和标准错误（stdout、stderr）会作为执行结果回复原群消息。
 - 人工确认或模型返回 `confirm` 时，机器人引用原群消息发送带 **是／否** 按钮的确认请求。请求的 `cc` 行原生 @ 项目 `admin_from` 中对应渠道的显式管理员。只有 `admin_from` 授权的管理员可选择。请填管理员本人的实际渠道用户 ID，可通过机器人回复的 `/whoami` 获取。飞书或 Lark 填 OpenID（`ou_…`），Telegram 填正整数用户 ID。通配符 `*` 无法定位具体用户。确认请求在五分钟后失效，重新加载或修改项目规则以及服务重启也会使请求失效。
 - `cc_enabled = true` 在最终回复末尾添加 `cc` 行，原生 @ `cc_user_ids` 中的用户。开启时至少填写一个对应渠道的用户 ID，关闭后保留已填的 ID。确认请求始终根据 `admin_from` 获取管理员。
+
+触发状态以原群消息上的表情反应显示。Agent 动作沿用项目已有的 Agent 反应状态。
+
+- **飞书或 Lark** 处理中使用 `reaction_emoji`，默认 `OnIt`。审核拒绝、超时、模型判否或 Shell 执行失败时使用 `CrossMark`。Shell 执行成功时使用 `done_emoji`。
+- **Telegram** 开启 `enable_reactions` 后，处理中显示 ⚡，拒绝或失败显示 👎，Shell 执行成功显示 👍。
 
 在 Web 后台保存会写入 `config.toml` 并立即生效。直接修改 TOML 后，在后台重新加载配置，或调用 `POST /api/v1/reload`。规则管理接口使用已配置的管理 token。管理 token 留空时，接口仅接受本机同源请求。
 

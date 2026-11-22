@@ -5,7 +5,8 @@ export type MessageTriggerMode = 'direct' | 'manual' | 'intent';
 
 export type MessageTriggerCondition =
   | { type: 'group' | 'sender' | 'mentioned'; values: string[] }
-  | { type: 'regex'; value: string };
+  | { type: 'regex'; value: string }
+  | { type: 'time_range'; start: string; end: string };
 
 export interface MessageTriggerGroup {
   match: MessageTriggerMatch;

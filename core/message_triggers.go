@@ -86,7 +86,7 @@ type messageTriggerConfig struct {
 type messageTriggerRuntime struct {
 	mu     sync.Mutex // serializes updates to the rules and platform group subscriptions
 	config atomic.Pointer[messageTriggerConfig]
-	dedup  MessageDedup
+	dedup  *MessageDedup
 	shells chan struct{}
 	models chan struct{}
 
@@ -140,6 +140,7 @@ func (e *Engine) applyMessageTriggers(rules []MessageTriggerRule, model MessageT
 		normalized = append(normalized, rule)
 	}
 	e.messageTriggers.config.Store(&messageTriggerConfig{rules: normalized, model: model})
+	e.clearMessageTriggerConfirmations(MessageProcessingFailed, false)
 	for _, platform := range e.platforms {
 		if triggers, ok := platform.(MessageTriggerPlatform); ok {
 			var groups []string
@@ -153,7 +154,7 @@ func (e *Engine) applyMessageTriggers(rules []MessageTriggerRule, model MessageT
 	}
 }
 
-func (e *Engine) matchMessageTrigger(p Platform, msg *Message) (*MessageTriggerRule, bool) {
+func (e *Engine) matchMessageTrigger(p Platform, msg *Message, at time.Time, evaluateIntent bool) (*MessageTriggerRule, bool) {
 	event := msg.Trigger
 	state := e.messageTriggers.config.Load()
 	if event == nil || state == nil || !event.BotMentionKnown || event.DirectBotMention ||
@@ -166,12 +167,11 @@ func (e *Engine) matchMessageTrigger(p Platform, msg *Message) (*MessageTriggerR
 	}
 
 	claimed := false
-	ctx, cancel := context.WithTimeout(e.ctx, state.model.timeout())
-	defer cancel()
+	var ctx context.Context
 	var intentSession *triggerIntentSession
 	for i := len(state.rules) - 1; i >= 0; i-- {
 		rule := &state.rules[i]
-		if !rule.watches(p.Name(), event.ChatID) || !rule.matchesGroups(event) {
+		if !rule.watches(p.Name(), event.ChatID) || !rule.matchesGroups(event, at) {
 			continue
 		}
 		// Deduplicate before a model request and keep the same claim while checking
@@ -181,6 +181,7 @@ func (e *Engine) matchMessageTrigger(p Platform, msg *Message) (*MessageTriggerR
 				return nil, true
 			}
 			claimed = true
+			msg.processingFeedback = startMessageProcessingFeedback(e.ctx, p, msg.ReplyCtx)
 			msg.triggerRateChecked = true
 			if !e.checkRateLimit(msg) {
 				msg.triggerRateLimited = true
@@ -189,7 +190,13 @@ func (e *Engine) matchMessageTrigger(p Platform, msg *Message) (*MessageTriggerR
 		}
 		reason := ""
 		if rule.TriggerMode == "intent" {
+			if !evaluateIntent {
+				return nil, false
+			}
 			if intentSession == nil {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(e.ctx, state.model.timeout())
+				defer cancel()
 				session := e.triggerIntentContext(msg)
 				intentSession = &session
 			}
@@ -215,7 +222,7 @@ func (e *Engine) matchMessageTrigger(p Platform, msg *Message) (*MessageTriggerR
 	return nil, false
 }
 
-func (e *Engine) mayEvaluateMessageIntent(p Platform, msg *Message) bool {
+func (e *Engine) mayEvaluateMessageIntent(p Platform, msg *Message, at time.Time) bool {
 	event := msg.Trigger
 	state := e.messageTriggers.config.Load()
 	if event == nil || state == nil || !event.BotMentionKnown || event.DirectBotMention {
@@ -223,30 +230,42 @@ func (e *Engine) mayEvaluateMessageIntent(p Platform, msg *Message) bool {
 	}
 	for i := len(state.rules) - 1; i >= 0; i-- {
 		rule := state.rules[i]
-		if rule.watches(p.Name(), event.ChatID) && rule.matchesGroups(event) {
+		if rule.watches(p.Name(), event.ChatID) && rule.matchesGroups(event, at) {
 			return rule.TriggerMode == "intent"
 		}
 	}
 	return false
 }
 
-func (e *Engine) prepareMessageTrigger(p Platform, msg *Message) (*MessageTriggerRule, bool) {
+func (e *Engine) prepareMessageTrigger(p Platform, msg *Message, at time.Time, evaluateIntent bool) (*MessageTriggerRule, bool) {
 	if msg.Trigger == nil {
 		return nil, false
 	}
-	rule, duplicate := e.matchMessageTrigger(p, msg)
+	rule, duplicate := e.matchMessageTrigger(p, msg, at, evaluateIntent)
+	if e.triggerSourceRecalled(p, msg.MessageID) {
+		msg.finishProcessingFeedback(MessageProcessingCancelled)
+		return nil, true
+	}
 	if rule == nil {
-		return nil, duplicate || msg.Trigger.RuleOnly
+		drop := duplicate || msg.Trigger.RuleOnly
+		if drop || msg.triggerRateLimited {
+			msg.finishProcessingFeedback(MessageProcessingFailed)
+		} else {
+			msg.finishProcessingFeedback(MessageProcessingHandOff)
+		}
+		return nil, drop
 	}
 	platform, ok := p.(MessageTriggerPlatform)
 	if !ok {
 		slog.Warn("message trigger: platform cannot reply to source", "project", e.name, "platform", p.Name())
+		msg.finishProcessingFeedback(MessageProcessingFailed)
 		return nil, true
 	}
 	replyCtx, err := platform.TriggerReplyContext(msg)
 	if err != nil || replyCtx == nil {
 		slog.Warn("message trigger: source reply unavailable", "project", e.name, "platform", p.Name(),
 			"rule", rule.Name, "msg_id", msg.MessageID, "error", err)
+		msg.finishProcessingFeedback(MessageProcessingFailed)
 		return nil, true
 	}
 	msg.triggerReplyCtx = &messageTriggerReply{source: replyCtx}
@@ -256,6 +275,20 @@ func (e *Engine) prepareMessageTrigger(p Platform, msg *Message) (*MessageTrigge
 	slog.Info("message trigger matched", "project", e.name, "rule", rule.Name, "action", rule.Action,
 		"platform", p.Name(), "msg_id", msg.MessageID)
 	return rule, false
+}
+
+func startMessageProcessingFeedback(ctx context.Context, p Platform, replyCtx any) func(MessageProcessingOutcome, bool) {
+	if platform, ok := p.(MessageProcessingFeedback); ok {
+		return platform.StartMessageProcessingFeedback(ctx, replyCtx)
+	}
+	return nil
+}
+
+func (msg *Message) finishProcessingFeedback(outcome MessageProcessingOutcome) {
+	if finish := msg.processingFeedback; finish != nil {
+		msg.processingFeedback = nil
+		finish(outcome, false)
+	}
 }
 
 func (e *Engine) replyToMessageTrigger(p Platform, reply *messageTriggerReply, content, workspaceDir string) {

@@ -1121,12 +1121,17 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # match = "and"                    # and | or, default and within a group / 组内默认 and
 #
 # [[projects.message_triggers.groups.conditions]]
-# type = "group"                   # group | sender | mentioned | regex
+# type = "group"                   # group | sender | mentioned | regex | time_range
 # values = ["oc_group_example"]    # group, sender, mentioned use any matching ID / 匹配任一 ID
 #
 # [[projects.message_triggers.groups.conditions]]
 # type = "regex"
 # value = '(?i:incident|outage)'   # Go RE2 on original message text / 用 Go 正则匹配原消息正文
+#
+# [[projects.message_triggers.groups.conditions]]
+# type = "time_range"              # Server local time, can cross midnight / 服务本地时间，可跨午夜
+# start = "22:00"                  # Inclusive / 包含开始时间
+# end = "06:00"                    # Exclusive / 不含结束时间
 #
 # [[projects.message_triggers.groups]]
 # match = "and"

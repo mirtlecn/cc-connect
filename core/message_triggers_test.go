@@ -35,7 +35,7 @@ func TestMessageTriggerConditions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := rule.matchesGroups(&tc.event); got != tc.want {
+			if got := rule.matchesGroups(&tc.event, time.Now()); got != tc.want {
 				t.Fatalf("match = %v, want %v", got, tc.want)
 			}
 		})
@@ -61,17 +61,18 @@ func TestMessageTriggerGroupsCombineIndependently(t *testing.T) {
 		t.Fatal(err)
 	}
 	operator := &MessageTriggerEvent{ChatID: "ops", Body: "contact", SenderIDs: []string{"operator"}, MentionedIDs: []string{"on-call"}}
-	if !rule.watches("test", "ops") || rule.watches("test", "other") || !rule.matchesGroups(operator) {
+	at := time.Now()
+	if !rule.watches("test", "ops") || rule.watches("test", "other") || !rule.matchesGroups(operator, at) {
 		t.Fatalf("OR failed to match the second group within scope")
 	}
 	rule.GroupMatch = "and"
-	if rule.matchesGroups(operator) {
+	if rule.matchesGroups(operator, at) {
 		t.Fatal("AND must require both groups")
 	}
 	rule.GroupMatch = "or"
 	rule.Groups[1].Match = "or"
 	operator.Body, operator.SenderIDs, operator.MentionedIDs = "not a match", nil, nil
-	if !rule.matchesGroups(operator) {
+	if !rule.matchesGroups(operator, at) {
 		t.Fatal("a group-ID condition participates in OR")
 	}
 }

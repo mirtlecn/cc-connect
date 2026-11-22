@@ -21,6 +21,7 @@ type messageTriggerConfirmation struct {
 	message  Message
 	rule     *MessageTriggerRule
 	expires  time.Time
+	timer    *time.Timer
 }
 
 func (e *Engine) requestMessageTriggerConfirmation(p Platform, msg *Message, rule *MessageTriggerRule) {
@@ -37,20 +38,23 @@ func (e *Engine) requestMessageTriggerConfirmation(p Platform, msg *Message, rul
 	if e.messageTriggers.confirmations == nil {
 		e.messageTriggers.confirmations = make(map[string]messageTriggerConfirmation)
 	}
-	for token, pending := range e.messageTriggers.confirmations {
-		if !now.Before(pending.expires) || !e.isCurrentMessageTrigger(pending.rule) {
-			delete(e.messageTriggers.confirmations, token)
-		}
+	if e.ctx.Err() != nil || e.messageTriggers.recalled[messageTriggerSource{p, msg.MessageID}].After(now) {
+		e.messageTriggers.confirmationMu.Unlock()
+		msg.finishProcessingFeedback(MessageProcessingCancelled)
+		return
 	}
-	if len(e.messageTriggers.confirmations) >= maxPendingMessageTriggerConfirmations || !e.isCurrentMessageTrigger(rule) ||
-		e.messageTriggers.recalled[messageTriggerSource{p, msg.MessageID}].After(now) {
+	if len(e.messageTriggers.confirmations) >= maxPendingMessageTriggerConfirmations || !e.isCurrentMessageTrigger(rule) {
 		e.messageTriggers.confirmationMu.Unlock()
 		slog.Warn("message trigger: could not schedule approval", "project", e.name, "rule", rule.Name)
 		return
 	}
 	e.messageTriggers.confirmations[id] = messageTriggerConfirmation{
 		platform: p, message: *msg, rule: rule, expires: now.Add(messageTriggerConfirmationTTL),
+		timer: time.AfterFunc(messageTriggerConfirmationTTL, func() {
+			e.failMessageTriggerConfirmation(id)
+		}),
 	}
+	msg.processingFeedback = nil // the stored copy owns feedback until resolution
 	e.messageTriggers.confirmationMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
@@ -61,11 +65,38 @@ func (e *Engine) requestMessageTriggerConfirmation(p Platform, msg *Message, rul
 	}
 	if err := platform.SendMessageTriggerConfirmation(ctx, msg.triggerReplyCtx.source, id, prompt,
 		e.i18n.T(MsgMessageTriggerYes), e.i18n.T(MsgMessageTriggerNo), adminIDs); err != nil {
-		e.messageTriggers.confirmationMu.Lock()
-		delete(e.messageTriggers.confirmations, id)
-		e.messageTriggers.confirmationMu.Unlock()
+		e.failMessageTriggerConfirmation(id)
 		slog.Warn("message trigger: confirmation could not be sent", "project", e.name,
 			"platform", p.Name(), "rule", rule.Name, "error", err)
+	}
+}
+
+func (e *Engine) failMessageTriggerConfirmation(id string) {
+	e.messageTriggers.confirmationMu.Lock()
+	pending, exists := e.messageTriggers.confirmations[id]
+	if exists {
+		delete(e.messageTriggers.confirmations, id)
+		pending.timer.Stop()
+	}
+	e.messageTriggers.confirmationMu.Unlock()
+	if exists {
+		pending.message.finishProcessingFeedback(MessageProcessingFailed)
+	}
+}
+
+func (e *Engine) clearMessageTriggerConfirmations(outcome MessageProcessingOutcome, all bool) {
+	e.messageTriggers.confirmationMu.Lock()
+	var removed []messageTriggerConfirmation
+	for id, pending := range e.messageTriggers.confirmations {
+		if all || !e.isCurrentMessageTrigger(pending.rule) {
+			delete(e.messageTriggers.confirmations, id)
+			pending.timer.Stop()
+			removed = append(removed, pending)
+		}
+	}
+	e.messageTriggers.confirmationMu.Unlock()
+	for _, pending := range removed {
+		pending.message.finishProcessingFeedback(outcome)
 	}
 }
 
@@ -101,14 +132,21 @@ func (e *Engine) resolveMessageTriggerConfirmation(p Platform, id, chatID, userI
 		return e.i18n.T(MsgMessageTriggerUnavailable), false
 	}
 	delete(e.messageTriggers.confirmations, id)
+	pending.timer.Stop()
 	e.messageTriggers.confirmationMu.Unlock()
-	if e.ctx.Err() != nil || !time.Now().Before(pending.expires) || !e.isCurrentMessageTrigger(pending.rule) {
+	if e.ctx.Err() != nil || e.triggerSourceRecalled(p, pending.message.MessageID) {
+		pending.message.finishProcessingFeedback(MessageProcessingCancelled)
+		return e.i18n.T(MsgMessageTriggerUnavailable), true
+	}
+	if !time.Now().Before(pending.expires) || !e.isCurrentMessageTrigger(pending.rule) {
+		pending.message.finishProcessingFeedback(MessageProcessingFailed)
 		return e.i18n.T(MsgMessageTriggerUnavailable), true
 	}
 
 	slog.Info("message trigger: admin decision", "project", e.name, "platform", p.Name(), "rule", pending.rule.Name,
 		"msg_id", pending.message.MessageID, "admin", userID, "approved", approved)
 	if !approved {
+		pending.message.finishProcessingFeedback(MessageProcessingFailed)
 		return e.i18n.T(MsgMessageTriggerRejected), true
 	}
 	// After explicit approval it is a new admission for ordering purposes.
@@ -121,7 +159,6 @@ func (e *Engine) resolveMessageTriggerConfirmation(p Platform, id, chatID, userI
 
 func (e *Engine) cancelMessageTriggerConfirmation(p Platform, messageID string) {
 	e.messageTriggers.confirmationMu.Lock()
-	defer e.messageTriggers.confirmationMu.Unlock()
 	if e.messageTriggers.recalled == nil {
 		e.messageTriggers.recalled = make(map[messageTriggerSource]time.Time)
 	}
@@ -132,10 +169,17 @@ func (e *Engine) cancelMessageTriggerConfirmation(p Platform, messageID string) 
 		}
 	}
 	e.messageTriggers.recalled[messageTriggerSource{p, messageID}] = now.Add(2 * messageTriggerConfirmationTTL)
+	var removed []messageTriggerConfirmation
 	for token, pending := range e.messageTriggers.confirmations {
 		if pending.platform == p && pending.message.MessageID == messageID {
 			delete(e.messageTriggers.confirmations, token)
+			pending.timer.Stop()
+			removed = append(removed, pending)
 		}
+	}
+	e.messageTriggers.confirmationMu.Unlock()
+	for _, pending := range removed {
+		pending.message.finishProcessingFeedback(MessageProcessingCancelled)
 	}
 }
 

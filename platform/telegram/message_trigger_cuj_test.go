@@ -100,6 +100,16 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 			return nil
 		}
 	}
+	assertSourceReaction := func(messageID, emoji string) {
+		t.Helper()
+		fields := await("setMessageReaction")
+		var reactions []models.ReactionType
+		if err := json.Unmarshal([]byte(fields.Get("reaction")), &reactions); err != nil ||
+			fields.Get("chat_id") != "-100" || fields.Get("message_id") != messageID ||
+			len(reactions) != 1 || reactions[0].ReactionTypeEmoji == nil || reactions[0].ReactionTypeEmoji.Emoji != emoji {
+			t.Fatalf("unexpected source reaction for message %s: %v, %v", messageID, fields, err)
+		}
+	}
 	assertReplyDestination := func(fields url.Values, originalID int) {
 		t.Helper()
 		var reply models.ReplyParameters
@@ -142,6 +152,7 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 	}})
 	send(101, "deploy first")
 	first := await("sendMessage")
+	assertSourceReaction("101", "⚡")
 	firstButtons := readConfirmButtons(first, 101)
 	click(7, firstButtons[0], first)
 	if text := await("answerCallbackQuery").Get("text"); !strings.Contains(text, "administrators") {
@@ -151,6 +162,7 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 	if text := await("answerCallbackQuery").Get("text"); !strings.Contains(text, "declined") {
 		t.Fatalf("admin decline feedback = %q", text)
 	}
+	assertSourceReaction("101", "👎")
 	if edit := await("editMessageText"); edit.Get("reply_markup") != `{"inline_keyboard":[]}` || strings.Contains(edit.Get("text"), "@8") {
 		t.Fatalf("decline left active buttons or repeated mentions: %v", edit)
 	}
@@ -165,6 +177,7 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 	link := models.MessageEntity{Type: models.MessageEntityTypeTextLink, Length: len("deploy"), URL: "https://example.test/runbook"}
 	send(102, "deploy approved", link)
 	second := await("sendMessage")
+	assertSourceReaction("102", "⚡")
 	secondButtons := readConfirmButtons(second, 102)
 	send(102, "deploy approved", link) // Telegram can deliver the same source update again.
 	click(8, secondButtons[0], second)
@@ -173,9 +186,6 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 	}
 	if edit := await("editMessageText"); edit.Get("reply_markup") != `{"inline_keyboard":[]}` || strings.Contains(edit.Get("text"), "@8") {
 		t.Fatalf("approval left active buttons or repeated mentions: %v", edit)
-	}
-	if reaction := await("setMessageReaction"); reaction.Get("chat_id") != "-100" || reaction.Get("message_id") != "102" {
-		t.Fatalf("trigger feedback went to wrong message: %v", reaction)
 	}
 	result := await("sendMessage")
 	assertReplyDestination(result, 102)

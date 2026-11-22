@@ -426,6 +426,7 @@ type Message struct {
 	triggerRateLimited bool
 	triggerConfirmed   bool
 	triggerReason      string
+	processingFeedback func(outcome MessageProcessingOutcome, receiptOwned bool)
 	ChannelKey         string // platform-provided channel identifier for workspace binding (optional)
 	// LegacyChannelKey is the platform-provided channel identifier used by an
 	// older workspace-binding scope. When both keys are set, multi-workspace

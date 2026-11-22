@@ -3,21 +3,22 @@ package core
 import (
 	"slices"
 	"strings"
+	"time"
 )
 
 func (r MessageTriggerRule) watches(platform, chatID string) bool {
 	return r.Enabled && r.Platform == platform && slices.Contains(r.groupsInScope, chatID)
 }
 
-func (r MessageTriggerRule) matchesGroups(event *MessageTriggerEvent) bool {
+func (r MessageTriggerRule) matchesGroups(event *MessageTriggerEvent, at time.Time) bool {
 	return matchTriggerItems(r.GroupMatch, r.Groups, func(group MessageTriggerGroup) bool {
 		return matchTriggerItems(group.Match, group.Conditions, func(condition MessageTriggerCondition) bool {
-			return condition.matches(event)
+			return condition.matches(event, at)
 		})
 	})
 }
 
-func (c MessageTriggerCondition) matches(event *MessageTriggerEvent) bool {
+func (c MessageTriggerCondition) matches(event *MessageTriggerEvent, at time.Time) bool {
 	switch c.Type {
 	case "group":
 		return slices.Contains(c.Values, event.ChatID)
@@ -27,6 +28,12 @@ func (c MessageTriggerCondition) matches(event *MessageTriggerEvent) bool {
 		return matchesTriggerIDs(c.Values, event.MentionedIDs)
 	case "regex":
 		return c.compiled != nil && c.compiled.MatchString(event.Body)
+	case "time_range":
+		minute := at.Hour()*60 + at.Minute()
+		if c.startMinute > c.endMinute {
+			return minute >= c.startMinute || minute < c.endMinute
+		}
+		return minute >= c.startMinute && minute < c.endMinute
 	default:
 		return false
 	}

@@ -1335,10 +1335,14 @@ func (p *Platform) addReactionWithEmojiContext(ctx context.Context, messageID, e
 }
 
 func (p *Platform) removeReaction(messageID, reactionID string) {
+	p.removeReactionWithContext(context.Background(), messageID, reactionID)
+}
+
+func (p *Platform) removeReactionWithContext(ctx context.Context, messageID, reactionID string) {
 	if reactionID == "" || messageID == "" {
 		return
 	}
-	resp, err := p.client.Im.MessageReaction.Delete(context.Background(),
+	resp, err := p.client.Im.MessageReaction.Delete(ctx,
 		larkim.NewDeleteMessageReactionReqBuilder().
 			MessageId(messageID).
 			ReactionId(reactionID).

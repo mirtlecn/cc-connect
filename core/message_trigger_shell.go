@@ -37,23 +37,47 @@ func (e *Engine) startMessageTriggerShell(p Platform, msg *Message, agent Agent,
 	}
 
 	workDir := e.commandWorkDir(agent, msg)
-	runMessageAccepted(msg)
+	admitted := *msg
+	msg.processingFeedback = nil
 	go func() {
 		defer func() { <-e.messageTriggers.shells }()
-		if indicator, ok := p.(TypingIndicator); ok {
-			if stop := indicator.StartTyping(e.ctx, msg.ReplyCtx); stop != nil {
+		if e.ctx.Err() != nil || e.triggerSourceRecalled(p, admitted.MessageID) {
+			admitted.finishProcessingFeedback(MessageProcessingCancelled)
+			return
+		}
+		if !e.isCurrentMessageTrigger(rule) {
+			admitted.finishProcessingFeedback(MessageProcessingFailed)
+			return
+		}
+		hasReceipt := admitted.OnAccepted != nil
+		runMessageAccepted(&admitted)
+		finish := admitted.processingFeedback
+		if indicator, ok := p.(TypingIndicator); finish == nil && ok {
+			if stop := indicator.StartTyping(e.ctx, admitted.ReplyCtx); stop != nil {
 				defer stop()
 			}
 		}
 		result, err := e.runMessageTriggerShell(rule.Command, workDir)
+		finishShellProcessingFeedback(finish, err, hasReceipt)
 		if err != nil {
 			slog.Warn("message trigger: command failed", "project", e.name, "rule", rule.Name, "error", err)
 			result = strings.TrimSpace(e.i18n.Tf(MsgError, err) + "\n" + result)
 		} else if result == "" {
 			result = e.i18n.T(MsgEmptyResponse)
 		}
-		e.replyToMessageTrigger(p, msg.triggerReplyCtx, result, workDir)
+		e.replyToMessageTrigger(p, admitted.triggerReplyCtx, result, workDir)
 	}()
+}
+
+func finishShellProcessingFeedback(finish func(MessageProcessingOutcome, bool), err error, receiptOwned bool) {
+	if finish == nil {
+		return
+	}
+	if err != nil {
+		finish(MessageProcessingFailed, receiptOwned)
+		return
+	}
+	finish(MessageProcessingSucceeded, receiptOwned)
 }
 
 func (e *Engine) runMessageTriggerShell(command, workDir string) (string, error) {

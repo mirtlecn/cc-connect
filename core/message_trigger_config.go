@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 type MessageTriggerRule struct {
@@ -49,8 +50,12 @@ type MessageTriggerCondition struct {
 	Type   string   `json:"type" toml:"type"`
 	Values []string `json:"values,omitempty" toml:"values,omitempty"`
 	Value  string   `json:"value,omitempty" toml:"value,omitempty"`
+	Start  string   `json:"start,omitempty" toml:"start,omitempty"`
+	End    string   `json:"end,omitempty" toml:"end,omitempty"`
 
-	compiled *regexp.Regexp
+	compiled    *regexp.Regexp
+	startMinute int
+	endMinute   int
 }
 
 type MessageTriggerModel struct {
@@ -268,6 +273,9 @@ func normalizeMessageTriggerGroup(input MessageTriggerGroup) (MessageTriggerGrou
 }
 
 func (c *MessageTriggerCondition) validate() error {
+	if c.Type != "time_range" && (c.Start != "" || c.End != "") {
+		return fmt.Errorf("start and end require a time_range condition")
+	}
 	switch c.Type {
 	case "group", "sender", "mentioned":
 		if len(c.Values) == 0 || c.Value != "" {
@@ -282,6 +290,15 @@ func (c *MessageTriggerCondition) validate() error {
 		if err != nil {
 			return fmt.Errorf("invalid regular expression: %w", err)
 		}
+	case "time_range":
+		c.Start, c.End = strings.TrimSpace(c.Start), strings.TrimSpace(c.End)
+		start, startErr := time.Parse("15:04", c.Start)
+		end, endErr := time.Parse("15:04", c.End)
+		if startErr != nil || endErr != nil || start.Format("15:04") != c.Start || end.Format("15:04") != c.End || c.Start == c.End || c.Value != "" || len(c.Values) != 0 {
+			return fmt.Errorf("time_range requires different start and end times in HH:MM format")
+		}
+		c.startMinute = start.Hour()*60 + start.Minute()
+		c.endMinute = end.Hour()*60 + end.Minute()
 	default:
 		return fmt.Errorf("unknown condition type %q", c.Type)
 	}

@@ -823,6 +823,7 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 	}
 	e.messageTriggers.shells = make(chan struct{}, 4)
 	e.messageTriggers.models = make(chan struct{}, 8)
+	e.messageTriggers.dedup = NewMessageDedup(2 * messageTriggerConfirmationTTL)
 	for _, p := range platforms {
 		if confirmer, ok := p.(MessageTriggerConfirmationPlatform); ok {
 			confirmer.SetMessageTriggerConfirmationHandler(func(id, chatID, userID string, approved bool) (string, bool) {
@@ -2462,6 +2463,7 @@ func (e *Engine) Stop() error {
 
 	// Cancel first so late lifecycle callbacks observe shutdown immediately.
 	e.cancel()
+	e.clearMessageTriggerConfirmations(MessageProcessingCancelled, true)
 
 	if e.observeCancel != nil {
 		e.observeCancel()
@@ -3033,27 +3035,26 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		e.handleMessageRecall(p, msg)
 		return
 	}
-	if e.mayEvaluateMessageIntent(p, msg) {
+	at := time.Now()
+	if e.mayEvaluateMessageIntent(p, msg, at) {
 		select {
 		case e.messageTriggers.models <- struct{}{}:
 			go func() {
 				defer func() { <-e.messageTriggers.models }()
-				e.handleMessageTriggerOrChat(p, msg)
+				e.handleMessageTriggerOrChat(p, msg, at, true)
 			}()
 		case <-e.ctx.Done():
 		default:
 			slog.Warn("message trigger: intent evaluation limit", "project", e.name, "platform", p.Name())
-			if !msg.Trigger.RuleOnly {
-				e.handleAcceptedMessage(p, msg, nil)
-			}
+			e.handleMessageTriggerOrChat(p, msg, at, false)
 		}
 		return
 	}
-	e.handleMessageTriggerOrChat(p, msg)
+	e.handleMessageTriggerOrChat(p, msg, at, true)
 }
 
-func (e *Engine) handleMessageTriggerOrChat(p Platform, msg *Message) {
-	trigger, drop := e.prepareMessageTrigger(p, msg)
+func (e *Engine) handleMessageTriggerOrChat(p Platform, msg *Message, at time.Time, evaluateIntent bool) {
+	trigger, drop := e.prepareMessageTrigger(p, msg, at, evaluateIntent)
 	if drop {
 		return
 	}
@@ -3061,6 +3062,7 @@ func (e *Engine) handleMessageTriggerOrChat(p Platform, msg *Message) {
 }
 
 func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *MessageTriggerRule) {
+	defer msg.finishProcessingFeedback(MessageProcessingFailed)
 	sourceContent := msg.Content
 	slog.Info("message received",
 		"platform", msg.Platform, "msg_id", msg.MessageID,
@@ -3288,7 +3290,11 @@ func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *Messag
 	}
 
 	if trigger != nil {
-		if !e.isCurrentMessageTrigger(trigger) || e.triggerSourceRecalled(p, msg.MessageID) {
+		if e.ctx.Err() != nil || e.triggerSourceRecalled(p, msg.MessageID) {
+			msg.finishProcessingFeedback(MessageProcessingCancelled)
+			return
+		}
+		if !e.isCurrentMessageTrigger(trigger) {
 			return
 		}
 		if (trigger.TriggerMode == "manual" || msg.triggerReason != "") && !msg.triggerConfirmed {
@@ -3305,6 +3311,10 @@ func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *Messag
 		}
 		if trigger.Prompt != "" {
 			msg.Content = trigger.Prompt + "\n\n" + msg.Content
+		}
+		msg.finishProcessingFeedback(MessageProcessingHandOff)
+		if e.ctx.Err() != nil || e.triggerSourceRecalled(p, msg.MessageID) || !e.isCurrentMessageTrigger(trigger) {
+			return
 		}
 	}
 	if e.discardStaleUserMessageIfNeeded(interactiveKey, msg) {
@@ -9049,7 +9059,11 @@ func (e *Engine) cmdShell(p Platform, msg *Message, raw string) {
 		workDir, _ = os.Getwd()
 	}
 
-	go func() { _ = e.runShellWithProgress(p, msg.ReplyCtx, shellCmd, workDir, timeout, 4000) }()
+	go func() {
+		finish := startMessageProcessingFeedback(e.ctx, p, msg.ReplyCtx)
+		err := e.runShellWithProgress(p, msg.ReplyCtx, shellCmd, workDir, timeout, 4000)
+		finishShellProcessingFeedback(finish, err, false)
+	}()
 }
 
 func (e *Engine) cmdDiff(p Platform, msg *Message, raw string) {
