@@ -80,8 +80,10 @@ level = "info" # debug, info, warn, error
 # =============================================================================
 # Intent Matching for Message Triggers / 消息触发任务的意图判断
 # =============================================================================
-# Optional shared model for intent mode. The endpoint must support forced function calls.
-# 意图判断模式使用的共享模型。接口需支持强制调用函数工具。
+# Optional shared model for intent mode. Chat Completions and Responses use json_schema by default.
+# 意图判断模式使用的共享模型。Chat Completions 和 Responses 默认使用 json_schema。
+# Official DeepSeek Chat Completions uses json_object with the same schema enforced locally.
+# DeepSeek 官方 Chat Completions 使用 json_object，cc-connect 在本机按同一套规则校验。
 # [message_trigger_model]
 # base_url = "https://model.example.com/v1"
 # api_type = "chat_completions"    # Default / 默认. Use responses for /responses.

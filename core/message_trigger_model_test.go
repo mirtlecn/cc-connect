@@ -18,12 +18,12 @@ import (
 	"time"
 )
 
-type triggerModelTestTool struct {
-	Type       string                `json:"type"`
-	Name       string                `json:"name"`
-	Strict     bool                  `json:"strict"`
-	Function   *triggerModelTestTool `json:"function"`
-	Parameters struct {
+type triggerModelTestFormat struct {
+	Type       string                  `json:"type"`
+	Name       string                  `json:"name"`
+	Strict     bool                    `json:"strict"`
+	JSONSchema *triggerModelTestFormat `json:"json_schema"`
+	Schema     struct {
 		Type                 string `json:"type"`
 		AdditionalProperties *bool  `json:"additionalProperties"`
 		Required             []string
@@ -31,18 +31,23 @@ type triggerModelTestTool struct {
 			Type string
 			Enum []string
 		}
-	} `json:"parameters"`
+	} `json:"schema"`
 }
 
 type triggerModelTestRequest struct {
-	Model             string                 `json:"model"`
-	Instructions      string                 `json:"instructions"`
-	Input             string                 `json:"input"`
-	Messages          []triggerIntentMessage `json:"messages"`
-	Store             *bool                  `json:"store"`
-	ParallelToolCalls *bool                  `json:"parallel_tool_calls"`
-	Tools             []triggerModelTestTool `json:"tools"`
-	ToolChoice        triggerModelTestTool   `json:"tool_choice"`
+	Model          string                 `json:"model"`
+	Instructions   string                 `json:"instructions"`
+	Input          string                 `json:"input"`
+	Messages       []triggerIntentMessage `json:"messages"`
+	Store          *bool                  `json:"store"`
+	Thinking       map[string]string      `json:"thinking"`
+	Reasoning      map[string]string      `json:"reasoning"`
+	Tools          json.RawMessage        `json:"tools"`
+	ToolChoice     json.RawMessage        `json:"tool_choice"`
+	ResponseFormat triggerModelTestFormat `json:"response_format"`
+	Text           struct {
+		Format triggerModelTestFormat `json:"format"`
+	} `json:"text"`
 }
 
 func decodeTriggerModelTestInput(t *testing.T, body io.Reader, protocol string) (triggerIntentInput, error) {
@@ -51,38 +56,37 @@ func decodeTriggerModelTestInput(t *testing.T, body io.Reader, protocol string) 
 	if err := json.NewDecoder(body).Decode(&request); err != nil {
 		return triggerIntentInput{}, err
 	}
-	if request.Model != "classifier-fixture" || request.ParallelToolCalls == nil || *request.ParallelToolCalls || len(request.Tools) != 1 {
-		return triggerIntentInput{}, fmt.Errorf("unexpected model or tool configuration: %+v", request)
-	}
-	if request.Tools[0].Type != "function" || request.ToolChoice.Type != "function" {
-		return triggerIntentInput{}, fmt.Errorf("model request must force a function")
+	if request.Model != "classifier-fixture" || request.Tools != nil || request.ToolChoice != nil {
+		return triggerIntentInput{}, fmt.Errorf("unexpected model or tool parameters")
 	}
 
 	instructions, input := request.Instructions, request.Input
-	function, choice := &request.Tools[0], &request.ToolChoice
+	format := request.Text.Format
+	schema := &format
 	if protocol == "responses" {
-		if request.Store == nil || *request.Store || len(request.Messages) != 0 || choice.Function != nil {
-			t.Error("Responses request must use input/instructions and store=false with a flat tool choice")
+		if request.Store == nil || *request.Store || len(request.Messages) != 0 || request.ResponseFormat.Type != "" {
+			t.Error("Responses request must use input, instructions, store=false and text.format")
 		}
 	} else {
 		if len(request.Messages) != 2 || request.Messages[0].Role != "system" || request.Messages[1].Role != "user" || input != "" || instructions != "" {
 			return triggerIntentInput{}, fmt.Errorf("Chat Completions request must separate system instructions and user data")
 		}
 		instructions, input = request.Messages[0].Content, request.Messages[1].Content
-		function, choice = function.Function, choice.Function
+		format = request.ResponseFormat
+		schema = format.JSONSchema
 	}
-	if function == nil || choice == nil || function.Name != "submit_trigger_decision" || choice.Name != "submit_trigger_decision" || !function.Strict {
-		return triggerIntentInput{}, fmt.Errorf("expected forced strict submit_trigger_decision tool")
+	if format.Type != "json_schema" || schema == nil || schema.Name != triggerDecisionSchemaName || !schema.Strict {
+		return triggerIntentInput{}, fmt.Errorf("expected strict decision JSON Schema")
 	}
-	schema := function.Parameters
-	if schema.Type != "object" || schema.AdditionalProperties == nil || *schema.AdditionalProperties ||
-		len(schema.Required) != 2 || !slices.Contains(schema.Required, "decision") || !slices.Contains(schema.Required, "reason") ||
-		schema.Properties["decision"].Type != "string" || !slices.Equal(schema.Properties["decision"].Enum, []string{"yes", "no", "confirm"}) ||
-		schema.Properties["reason"].Type != "string" {
-		t.Errorf("unexpected decision tool schema: %+v", schema)
+	fields := schema.Schema
+	if fields.Type != "object" || fields.AdditionalProperties == nil || *fields.AdditionalProperties ||
+		len(fields.Required) != 2 || !slices.Contains(fields.Required, "decision") || !slices.Contains(fields.Required, "reason") ||
+		fields.Properties["decision"].Type != "string" || !slices.Equal(fields.Properties["decision"].Enum, []string{"yes", "no", "confirm"}) ||
+		fields.Properties["reason"].Type != "string" {
+		t.Errorf("unexpected decision schema: %+v", fields)
 	}
-	if !strings.Contains(instructions, "untrusted") || !strings.Contains(instructions, "submit_trigger_decision") {
-		t.Errorf("tool instructions do not distinguish message data from instructions")
+	if !strings.Contains(instructions, "untrusted") || !strings.Contains(instructions, `"decision"`) {
+		t.Errorf("model instructions lack JSON output or untrusted message guidance")
 	}
 	var payload triggerIntentInput
 	if err := json.Unmarshal([]byte(input), &payload); err != nil {
@@ -91,27 +95,19 @@ func decodeTriggerModelTestInput(t *testing.T, body io.Reader, protocol string) 
 	return payload, nil
 }
 
-type triggerModelTestCall struct {
-	name      string
-	arguments string
-}
-
-func triggerModelToolResponse(protocol string, calls ...triggerModelTestCall) map[string]any {
-	items := make([]map[string]any, 0, len(calls))
-	for _, call := range calls {
-		if protocol == "responses" {
-			items = append(items, map[string]any{"type": "function_call", "name": call.name, "arguments": call.arguments})
-		} else {
-			items = append(items, map[string]any{"type": "function", "function": map[string]any{"name": call.name, "arguments": call.arguments}})
-		}
-	}
+func triggerModelJSONResponse(protocol, decisionJSON string) map[string]any {
 	if protocol == "responses" {
-		return map[string]any{"status": "completed", "output": items}
+		return map[string]any{"status": "completed", "output": []map[string]any{
+			{"type": "reasoning"},
+			{"type": "message", "content": []map[string]any{{"type": "output_text", "text": decisionJSON}}},
+		}}
 	}
-	return map[string]any{"choices": []any{map[string]any{"message": map[string]any{"tool_calls": items}}}}
+	return map[string]any{"choices": []map[string]any{{
+		"finish_reason": "stop", "message": map[string]any{"content": decisionJSON},
+	}}}
 }
 
-func TestMessageTriggerModelToolProtocols(t *testing.T) {
+func TestMessageTriggerModelStructuredOutputProtocols(t *testing.T) {
 	t.Setenv("CC_TRIGGER_MODEL_TEST_KEY", "test-credential")
 	for _, wire := range []struct{ protocol, path string }{
 		{"chat_completions", "/v1/chat/completions"}, {"responses", "/v1/responses"},
@@ -133,7 +129,7 @@ func TestMessageTriggerModelToolProtocols(t *testing.T) {
 				if input.Session.Trigger.Body == "test" {
 					arguments = `{"decision":"yes","reason":"ok"}`
 				}
-				if err := json.NewEncoder(w).Encode(triggerModelToolResponse(wire.protocol, triggerModelTestCall{"submit_trigger_decision", arguments})); err != nil {
+				if err := json.NewEncoder(w).Encode(triggerModelJSONResponse(wire.protocol, arguments)); err != nil {
 					t.Error(err)
 				}
 			}))
@@ -168,22 +164,61 @@ func TestMessageTriggerModelToolProtocols(t *testing.T) {
 	}
 }
 
+func TestMessageTriggerModelDeepSeekStructuredOutput(t *testing.T) {
+	for _, test := range []struct {
+		name, baseURL, protocol, format, thinking, reasoning string
+	}{
+		{"official chat", "https://api.deepseek.com/", "chat_completions", "json_object", "disabled", ""},
+		{"official responses", "https://api.deepseek.com/", "responses", "json_schema", "", "none"},
+		{"other provider", "https://api.deepseek.com.example.com/v1", "chat_completions", "json_schema", "", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := MessageTriggerModel{BaseURL: test.baseURL, Model: "deepseek-flash", APIType: test.protocol}
+			payload, err := model.payload(triggerIntentInput{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var request triggerModelTestRequest
+			if err := json.Unmarshal(payload, &request); err != nil {
+				t.Fatal(err)
+			}
+			format := request.ResponseFormat.Type
+			if test.protocol == "responses" {
+				format = request.Text.Format.Type
+			}
+			if format != test.format || request.Thinking["type"] != test.thinking || request.Reasoning["effort"] != test.reasoning || request.Tools != nil || request.ToolChoice != nil {
+				t.Fatalf("unexpected structured response format or model options for %s", test.name)
+			}
+		})
+	}
+}
+
 func TestMessageTriggerModelFailsClosed(t *testing.T) {
 	for _, protocol := range []string{"chat_completions", "responses"} {
 		t.Run(protocol, func(t *testing.T) {
 			model := MessageTriggerModel{APIType: protocol}
-			plainText := map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": `{"decision":"yes","reason":"text only"}`}}}}
-			if protocol == "responses" {
-				plainText = map[string]any{"status": "completed", "output": []any{map[string]any{"type": "message", "content": "yes"}}}
-			}
-			validCall := triggerModelTestCall{"submit_trigger_decision", `{"decision":"no","reason":"not an incident"}`}
+			const validJSON = `{"decision":"no","reason":"not an incident"}`
 			invalid := map[string]map[string]any{
-				"plain text": plainText,
-				"wrong tool": triggerModelToolResponse(protocol, triggerModelTestCall{"wrong_tool", validCall.arguments}),
-				"two calls":  triggerModelToolResponse(protocol, validCall, validCall),
+				"missing output": {},
 			}
-			for name, args := range map[string]string{
-				"non-JSON arguments": "not JSON",
+			if protocol == "responses" {
+				incomplete := triggerModelJSONResponse(protocol, validJSON)
+				incomplete["status"] = "incomplete"
+				invalid["incomplete"] = incomplete
+				multiple := triggerModelJSONResponse(protocol, validJSON)
+				items := multiple["output"].([]map[string]any)
+				multiple["output"] = append(items, items[1])
+				invalid["multiple messages"] = multiple
+			} else {
+				truncated := triggerModelJSONResponse(protocol, validJSON)
+				truncated["choices"].([]map[string]any)[0]["finish_reason"] = "length"
+				invalid["truncated"] = truncated
+				refusal := triggerModelJSONResponse(protocol, validJSON)
+				refusal["choices"].([]map[string]any)[0]["message"].(map[string]any)["refusal"] = "refused"
+				invalid["refusal"] = refusal
+			}
+			for name, content := range map[string]string{
+				"non-JSON":           "not JSON",
 				"duplicate decision": `{"decision":"yes","decision":"no","reason":"conflict"}`,
 				"duplicate reason":   `{"decision":"yes","reason":"first","reason":"second"}`,
 				"wrong value type":   `{"decision":true,"reason":"boolean"}`,
@@ -193,7 +228,7 @@ func TestMessageTriggerModelFailsClosed(t *testing.T) {
 				"unexpected field":   `{"decision":"yes","reason":"ok","extra":1}`,
 				"trailing input":     `{"decision":"yes","reason":"ok"} {}`,
 			} {
-				invalid[name] = triggerModelToolResponse(protocol, triggerModelTestCall{"submit_trigger_decision", args})
+				invalid[name] = triggerModelJSONResponse(protocol, content)
 			}
 			for name, response := range invalid {
 				t.Run(name, func(t *testing.T) {
@@ -201,16 +236,16 @@ func TestMessageTriggerModelFailsClosed(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if got, err := model.decodeToolCall(bytes.NewReader(data)); err == nil || got != (triggerIntentDecision{}) {
+					if got, err := model.decodeDecision(bytes.NewReader(data)); err == nil || got != (triggerIntentDecision{}) {
 						t.Fatalf("accepted invalid response: %+v, %v", got, err)
 					}
 				})
 			}
-			data, err := json.Marshal(triggerModelToolResponse(protocol, validCall))
+			data, err := json.Marshal(triggerModelJSONResponse(protocol, validJSON))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got, err := model.decodeToolCall(bytes.NewReader(data)); err != nil || got.Decision != "no" || got.Reason != "not an incident" {
+			if got, err := model.decodeDecision(bytes.NewReader(data)); err != nil || got.Decision != "no" || got.Reason != "not an incident" {
 				t.Fatalf("valid negative response: %+v, %v", got, err)
 			}
 		})
@@ -267,7 +302,7 @@ func TestMessageTriggerIntentConfirmationRunsOnlyAfterApproval(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		if err := json.NewEncoder(w).Encode(triggerModelToolResponse("chat_completions", triggerModelTestCall{"submit_trigger_decision", string(args)})); err != nil {
+		if err := json.NewEncoder(w).Encode(triggerModelJSONResponse("chat_completions", string(args))); err != nil {
 			t.Error(err)
 		}
 	}))

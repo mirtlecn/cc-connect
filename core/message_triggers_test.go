@@ -149,6 +149,9 @@ func TestMessageTriggerAdminConfirmationAndShell(t *testing.T) {
 	p := newMessageTriggerTestPlatform()
 	e := NewEngine("confirm-project", &stubAgent{}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
 	t.Cleanup(func() { _ = e.Stop() })
+	e.SetReplyFooterEnabled(true)
+	e.SetShowContextIndicator(true)
+	e.SetShowWorkdirIndicator(true)
 	e.SetAdminFrom("admin, second-admin")
 	rule := MessageTriggerRule{
 		Name: "shell task", Enabled: true, Platform: p.Name(), TriggerMode: "manual",
@@ -189,10 +192,11 @@ func TestMessageTriggerAdminConfirmationAndShell(t *testing.T) {
 	}
 	env := &cujEnv{t: t, plat: p.stubPlatformEngine}
 	env.waitFor("configured shell result quoting the source", 3*time.Second, func() bool {
-		return slices.Contains(p.getSent(), "source:approve cc one two -> configured-command")
+		return len(p.getSent()) != 0
 	})
-	if got := p.getSent(); len(got) != 1 {
-		t.Fatalf("unexpected messages: %v", got)
+	want := []string{"source:approve cc one two -> configured-command"}
+	if got := p.getSent(); !slices.Equal(got, want) {
+		t.Fatalf("shell reply with global footer enabled = %q, want %q", got, want)
 	}
 
 	e.ReceiveMessage(p, messageTriggerTestMessage(p, "recalled", "run task", false))

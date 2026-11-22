@@ -31,6 +31,23 @@ function normalizedBaseURL(url: string) {
   return url.trim().replace(/\/+$/, '');
 }
 
+const endpointPaths: Record<ModelDraft['apiType'], string> = {
+  chat_completions: '/chat/completions',
+  responses: '/responses',
+};
+
+function modelRequestURL(baseURL: string, apiType: ModelDraft['apiType']): string {
+  const address = baseURL.trim();
+  if (!/^https?:\/\/[^/\s@]+(?:\/|$)/i.test(address) || /[\\?#]/.test(address)) return '';
+  try {
+    const url = new URL(address);
+    url.pathname = (url.pathname + endpointPaths[apiType]).replace(/\/{2,}/g, '/');
+    return url.href;
+  } catch {
+    return '';
+  }
+}
+
 export default function MessageTriggerModelSettings({ onSaved }: { onSaved: () => void }) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState<ModelDraft | null>(null);
@@ -66,6 +83,7 @@ export default function MessageTriggerModelSettings({ onSaved }: { onSaved: () =
   const timeoutSeconds = draft?.timeout ? Number(draft.timeout) : undefined;
   const timeoutValid = timeoutSeconds === undefined || (Number.isInteger(timeoutSeconds) && timeoutSeconds >= 0 && timeoutSeconds <= 300);
   const valid = draft?.baseURL.trim() && draft.model.trim() && timeoutValid;
+  const requestURL = draft ? modelRequestURL(draft.baseURL, draft.apiType) : '';
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -102,17 +120,25 @@ export default function MessageTriggerModelSettings({ onSaved }: { onSaved: () =
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label={t('messageTriggerModel.protocol')}>
                 <select className={selectClassName} value={draft.apiType} onChange={event => update('apiType', event.target.value === 'responses' ? 'responses' : 'chat_completions')}>
-                  <option value="chat_completions">/chat/completions</option>
-                  <option value="responses">/responses</option>
+                  <option value="chat_completions">{endpointPaths.chat_completions}</option>
+                  <option value="responses">{endpointPaths.responses}</option>
                 </select>
               </Field>
               <Field label={t('messageTriggerModel.timeout')} hint={t('messageTriggerModel.timeoutHint')}>
                 <Input type="number" min={0} max={300} step={1} placeholder="10" value={draft.timeout} onChange={event => update('timeout', event.target.value)} />
               </Field>
             </div>
-            <Field label={t('messageTriggerModel.baseURL')} hint={t('messageTriggerModel.baseURLHint')}>
-              <Input required inputMode="url" spellCheck={false} placeholder="https://api.example.com/v1" value={draft.baseURL} onChange={event => updateBaseURL(event.target.value)} />
-            </Field>
+            <div className="space-y-2">
+              <Field label={t('messageTriggerModel.baseURL')} hint={t('messageTriggerModel.baseURLHint')}>
+                <Input required inputMode="url" spellCheck={false} placeholder="https://api.example.com/v1" value={draft.baseURL} onChange={event => updateBaseURL(event.target.value)} />
+              </Field>
+              {requestURL && (
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+                  <span>{t('messageTriggerModel.requestURL')}</span>
+                  <code className="min-w-0 break-all text-gray-700 dark:text-gray-200">{requestURL}</code>
+                </div>
+              )}
+            </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label={t('messageTriggerModel.model')}>
                 <Input required spellCheck={false} value={draft.model} onChange={event => update('model', event.target.value)} />

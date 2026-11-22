@@ -96,7 +96,7 @@ func (m *ManagementServer) saveVerifiedMessageTriggerModel(w http.ResponseWriter
 		}
 	}
 	if err := model.Probe(r.Context()); err != nil {
-		mgmtError(w, http.StatusBadRequest, "model tool-call test failed: "+err.Error())
+		mgmtError(w, http.StatusBadRequest, "model structured output test failed: "+err.Error())
 		return
 	}
 	if err := m.saveMessageTriggerModel(model); err != nil {

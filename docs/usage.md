@@ -1049,7 +1049,7 @@ value = '(?i)^status$'
 
 After the grouped conditions match, `trigger_mode = "direct"` runs the action immediately. Use `trigger_mode = "manual"` to ask an administrator to approve it first. Use `trigger_mode = "intent"` to ask the model for a decision, with a natural-language prompt in `intent_prompt`.
 
-Configure the shared intent model in the Web dashboard or at the top level of `config.toml`. The Web dashboard probes the endpoint before saving. After editing the file directly, reload the configuration. The `base_url`, `model`, and `api_type` settings support environment references. Rule values are read literally.
+Configure the shared intent model in the Web dashboard or at the top level of `config.toml`. Before saving, the Web dashboard sends a test request with synthetic input and validates the response. It rejects the save if the test request fails or the response is invalid. After editing the file directly, reload the configuration. The `base_url`, `model`, and `api_type` settings support environment references. Rule values are read literally.
 
 ```toml
 [message_trigger_model]
@@ -1064,7 +1064,9 @@ timeout_seconds = 10
 
 The Web dashboard shows whether a key is stored and masks it in the configuration preview. It never sends the old key to a different base URL. Provide a key for the new endpoint if it requires authentication, or clear the saved key to use an endpoint without authentication. Existing `api_key_env` values remain a fallback when `api_key` is empty. Web saves use file mode `0600` on Unix.
 
-The model receives `intent_prompt`, recent messages from the same session, and the original trigger message. It must support the required function call `submit_trigger_decision` with a `decision` of `yes`, `no`, or `confirm`, plus a `reason`. `yes` runs the action, `no` declines it, and `confirm` waits for administrator approval. The confirmation card shows the model's reason. The action is skipped if approval is needed and there is no eligible administrator, or if the model call fails, times out, or returns an invalid decision.
+The model receives `intent_prompt`, recent messages from the same session, and the original trigger message. By default, cc-connect requests native `json_schema` structured output on Chat Completions and Responses, including the official DeepSeek Responses API. For the official DeepSeek Chat Completions API, cc-connect requests `json_object` and validates the returned JSON against the same schema locally. [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) · [DeepSeek Responses](https://api-docs.deepseek.com/api/create-response/)
+
+The response must be a JSON object containing only `decision` and `reason`. The `decision` field accepts `yes`, `no`, or `confirm`, and `reason` must be a string. `yes` runs the action, `no` declines it, and `confirm` waits for administrator approval. The confirmation card shows the model's reason. The action is skipped if approval is needed and there is no eligible administrator, or if the model call fails, times out, or returns an invalid decision.
 
 ### Actions, confirmation, and CC
 

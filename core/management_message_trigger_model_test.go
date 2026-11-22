@@ -69,9 +69,7 @@ func managementTriggerModelProbe(t *testing.T, succeeds bool) (*httptest.Server,
 			http.Error(w, "fixture upstream response", http.StatusUnauthorized)
 			return
 		}
-		if err := json.NewEncoder(w).Encode(triggerModelToolResponse("chat_completions", triggerModelTestCall{
-			name: "submit_trigger_decision", arguments: `{"decision":"yes","reason":"ok"}`,
-		})); err != nil {
+		if err := json.NewEncoder(w).Encode(triggerModelJSONResponse("chat_completions", `{"decision":"yes","reason":"ok"}`)); err != nil {
 			t.Error(err)
 		}
 	}))
@@ -148,7 +146,7 @@ func TestMgmtMessageTriggerModelDirectKeyLifecycle(t *testing.T) {
 		"base_url": failing.URL + "/v1", "model": "classifier-fixture", "api_key": rejectedKey,
 	})
 	assertManagementTriggerModelProbeAuth(t, failingAuth, "Bearer "+rejectedKey)
-	if code != http.StatusBadRequest || response.OK || !strings.Contains(response.Error, "model tool-call test failed") {
+	if code != http.StatusBadRequest || response.OK || !strings.Contains(response.Error, "model structured output test failed") {
 		t.Fatalf("failed model probe returned HTTP %d, want 400", code)
 	}
 	if stored != beforeFailure || saves != 2 {

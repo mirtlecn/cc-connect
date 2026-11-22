@@ -960,7 +960,7 @@ value = '^状态$'
 
 条件组匹配后，`trigger_mode = "direct"` 直接执行动作。`trigger_mode = "manual"` 等待管理员批准。`trigger_mode = "intent"` 让模型根据 `intent_prompt` 中的自然语言提示词作出决定。
 
-在 Web 后台或 `config.toml` 顶层配置共享意图模型。Web 后台会先验证接口，验证通过后才保存。直接修改 TOML 后重新加载配置。`base_url`、`model` 和 `api_type` 可以引用环境变量。规则值按字面读取。
+在 Web 后台或 `config.toml` 顶层配置共享意图模型。Web 后台保存前会用合成输入发起一次测试请求并校验响应。请求失败或校验不通过时，保存失败。直接修改 TOML 后重新加载配置。`base_url`、`model` 和 `api_type` 可以引用环境变量。规则值按字面读取。
 
 ```toml
 [message_trigger_model]
@@ -975,7 +975,9 @@ timeout_seconds = 10
 
 Web 后台只显示密钥是否已保存，配置预览会遮盖密钥值。修改 Base URL 时，旧密钥不会发送到新地址。新接口需要认证时填入对应密钥，无需认证时可清除已保存的密钥。未配置 `api_key` 时，旧配置的 `api_key_env` 仍可作为回退。Web 保存后，Unix 上配置文件的权限为 `0600`。
 
-模型输入包括 `intent_prompt`、同一会话的近期消息和原始触发消息。模型必须支持强制调用函数工具 `submit_trigger_decision`，返回 `decision`（`yes`、`no` 或 `confirm`）及 `reason`。`yes` 执行动作，`no` 跳过动作，`confirm` 等待管理员批准。确认卡片会显示模型给出的理由。需要确认却缺少符合条件的管理员时，动作不会执行。模型调用失败、超时或返回无效结果时，也会跳过动作。
+模型输入包括 `intent_prompt`、同一会话的近期消息和原始触发消息。cc-connect 默认在 Chat Completions 和 Responses 请求原生 `json_schema` 结构化输出，DeepSeek 官方 Responses 也使用此格式。对于 DeepSeek 官方 Chat Completions，cc-connect 请求 `json_object`，并在本机按同一套 JSON Schema 校验响应。[DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) · [DeepSeek Responses](https://api-docs.deepseek.com/api/create-response/)
+
+响应必须为 JSON 对象，只包含 `decision` 和 `reason`。`decision` 只能是 `yes`、`no` 或 `confirm`，`reason` 必须是字符串。`yes` 执行动作，`no` 跳过动作，`confirm` 等待管理员批准。确认卡片会显示模型给出的理由。需要确认却缺少符合条件的管理员时，动作不会执行。模型调用失败、超时或响应不符合格式时，也会跳过动作。
 
 ### 动作、确认与抄送
 

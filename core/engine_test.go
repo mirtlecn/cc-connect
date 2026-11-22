@@ -12007,9 +12007,13 @@ func TestCmdShell_BlockedWithoutAdmin(t *testing.T) {
 	}
 }
 
-func TestCmdShell_AllowedForAdmin(t *testing.T) {
+func TestCmdShell_AllowedForAdminWithoutAgentFooter(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	e.SetReplyFooterEnabled(true)
+	e.SetShowContextIndicator(true)
+	e.SetShowWorkdirIndicator(true)
 	e.SetAdminFrom("admin-user")
 
 	msg := &Message{
@@ -12021,18 +12025,13 @@ func TestCmdShell_AllowedForAdmin(t *testing.T) {
 	}
 	e.handleCommand(p, msg, msg.Content)
 
-	// Give the async goroutine time to complete.
-	time.Sleep(500 * time.Millisecond)
-
-	sent := p.getSent()
-	foundAdmin := false
-	for _, s := range sent {
-		if strings.Contains(s, "admin") && strings.Contains(s, "privilege") {
-			foundAdmin = true
-		}
-	}
-	if foundAdmin {
-		t.Fatalf("admin user should not be blocked, got %v", sent)
+	env := &cujEnv{t: t, plat: p}
+	env.waitFor("shell command completion", 3*time.Second, func() bool {
+		return strings.HasPrefix(env.lastSent(), "✅")
+	})
+	want := "✅ `echo hello`\n```\nhello\n```"
+	if got := env.lastSent(); got != want {
+		t.Fatalf("shell reply with global footer enabled = %q, want %q", got, want)
 	}
 }
 
