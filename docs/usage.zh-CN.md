@@ -968,7 +968,7 @@ end = "06:00"
 
 条件组匹配后，`trigger_mode = "direct"` 直接执行动作。`trigger_mode = "manual"` 等待管理员批准。`trigger_mode = "intent"` 让模型根据 `intent_prompt` 中的自然语言提示词作出决定。
 
-在 Web 后台或 `config.toml` 顶层配置共享意图模型。Web 后台保存前会用合成输入发起一次测试请求并校验响应。请求失败或校验不通过时，保存失败。直接修改 TOML 后重新加载配置。`base_url`、`model` 和 `api_type` 可以引用环境变量。规则值按字面读取。
+在 Web 后台或 `config.toml` 顶层配置共享意图模型。Web 后台保存前会用合成输入验证结构化输出。开启图片输入时，还会用测试图片验证模型能否接收图片。测试通过后才会保存。直接修改 TOML 后重新加载配置。`base_url`、`model` 和 `api_type` 可以引用环境变量。规则值按字面读取。
 
 ```toml
 [message_trigger_model]
@@ -976,14 +976,19 @@ base_url = "https://model.example.com/v1"
 api_type = "chat_completions"
 model = "your-model"
 api_key = "your-api-key"
+send_images = false
 timeout_seconds = 10
 ```
 
 `api_type` 默认是 `chat_completions`，服务在 `base_url` 后追加 `/chat/completions`。将其设为 `responses` 时使用 `/responses`。`api_key` 直接填写密钥。接口无需认证时可留空。默认超时为 10 秒。
 
+使用 Gemini 原生接口时，选择 **Gemini 原生 API（generateContent）** 或设置 `api_type = "gemini"`。Base URL 填 `https://generativelanguage.googleapis.com/v1beta`，模型名填写具体的模型 ID，可带 `models/` 前缀。cc-connect 会追加 `/models/{model}:generateContent` 并请求结构化 JSON 输出。[Gemini Generate Content API](https://ai.google.dev/api/generate-content)
+
 获授权的用户打开 Web 设置时，API 密钥输入框会以明文显示已保存的 `api_key`。点击测试并保存后，测试通过才会保存当前输入。留空并保存可清除已保存的密钥。**原始配置**预览会遮盖密钥。旧版 `api_key_env` 通过 TOML 手工维护，在 `api_key` 为空时仍会生效。Web 保存后，Unix 上配置文件的权限为 `0600`。
 
 模型输入包括 `intent_prompt`、同一会话的近期消息和原始触发消息。cc-connect 默认在 Chat Completions 和 Responses 请求原生 `json_schema` 结构化输出，DeepSeek 官方 Responses 也使用此格式。对于 DeepSeek 官方 Chat Completions，cc-connect 请求 `json_object`，并在本机按同一套 JSON Schema 校验响应。[DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) · [DeepSeek Responses](https://api-docs.deepseek.com/api/create-response/)
+
+启用 **发送图片给意图判定模型** 或设置 `send_images = true` 后，触发消息和群上下文中的可用图片会发给配置的模型服务，合计最多六张。此开关默认关闭，适用于三种接口协议。开启时，所选模型和接口需要同时支持图片输入与结构化输出。
 
 响应必须为 JSON 对象，只包含 `decision` 和 `reason`。`decision` 只能是 `yes`、`no` 或 `confirm`，`reason` 必须是字符串。`yes` 执行动作，`no` 跳过动作，`confirm` 等待管理员批准。确认卡片会显示模型给出的理由。需要确认却缺少符合条件的管理员时，动作不会执行。模型调用失败、超时或响应不符合格式时，也会跳过动作。
 

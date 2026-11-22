@@ -35,11 +35,12 @@ export interface MessageTriggerSettings {
 }
 
 export interface MessageTriggerModelSettings {
-  api_type: 'responses' | 'chat_completions';
+  api_type: 'responses' | 'chat_completions' | 'gemini';
   base_url: string;
   model: string;
   timeout_seconds?: number;
   api_key: string;
+  send_images?: boolean;
 }
 
 const triggerPath = (project: string) => `/projects/${encodeURIComponent(project)}/message-triggers`;

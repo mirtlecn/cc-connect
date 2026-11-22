@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -168,7 +169,7 @@ func (e *Engine) matchMessageTrigger(p Platform, msg *Message, at time.Time, eva
 
 	claimed := false
 	var ctx context.Context
-	var intentSession *triggerIntentSession
+	var input *triggerIntentInput
 	for i := len(state.rules) - 1; i >= 0; i-- {
 		rule := &state.rules[i]
 		if !rule.watches(p.Name(), event.ChatID) || !rule.matchesGroups(event, at) {
@@ -193,14 +194,22 @@ func (e *Engine) matchMessageTrigger(p Platform, msg *Message, at time.Time, eva
 			if !evaluateIntent {
 				return nil, false
 			}
-			if intentSession == nil {
+			if input == nil {
+				input = &triggerIntentInput{Session: e.triggerIntentContext(msg)}
+				if state.model.SendImages && state.model.available() {
+					extra, images := e.triggerIntentImages(msg, state.model.protocol())
+					input.Session.Trigger.Context = truncateStr(extra, 4000)
+					input.Images = images
+					if e.messageTriggers.config.Load() != state || e.triggerSourceRecalled(p, msg.MessageID) {
+						return nil, false
+					}
+				}
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithTimeout(e.ctx, state.model.timeout())
 				defer cancel()
-				session := e.triggerIntentContext(msg)
-				intentSession = &session
 			}
-			judgment, err := state.model.classify(ctx, triggerIntentInput{Prompt: rule.IntentPrompt, Session: *intentSession})
+			input.Prompt = rule.IntentPrompt
+			judgment, err := state.model.classify(ctx, *input)
 			if err != nil {
 				slog.Warn("message trigger: intent evaluation failed", "project", e.name, "rule", rule.Name,
 					"platform", p.Name(), "msg_id", msg.MessageID, "error", err)
@@ -220,6 +229,46 @@ func (e *Engine) matchMessageTrigger(p Platform, msg *Message, at time.Time, eva
 		return rule, false
 	}
 	return nil, false
+}
+
+func (e *Engine) triggerIntentImages(msg *Message, protocol string) (string, []ImageAttachment) {
+	const maxImages = 6
+	// Base64 adds a third to inline media size. Leave room for the JSON input
+	// within the Gemini API's 20 MB inline request limit.
+	remaining := 12 * 1024 * 1024
+	var images []ImageAttachment
+	add := func(attachments []ImageAttachment) {
+		for _, image := range attachments {
+			if len(images) == maxImages {
+				break
+			}
+			if len(image.Data) == 0 || len(image.Data) > remaining {
+				continue
+			}
+			switch image.MimeType {
+			case "image/png", "image/jpeg", "image/webp":
+			case "image/gif":
+				if protocol == "gemini" {
+					continue
+				}
+			default:
+				continue
+			}
+			images = append(images, image)
+			remaining -= len(image.Data)
+		}
+	}
+	add(msg.Images)
+	if msg.LoadExtraContent != nil && len(images) < maxImages && remaining > 0 {
+		currentCount := len(images)
+		extra, historyImages := msg.LoadExtraContent(e.ctx)
+		add(historyImages)
+		if len(images)-currentCount == len(historyImages) {
+			// The rendered context numbers history attachments from one.
+			return extra, slices.Concat(images[currentCount:], images[:currentCount])
+		}
+	}
+	return msg.ExtraContent, images
 }
 
 func (e *Engine) mayEvaluateMessageIntent(p Platform, msg *Message, at time.Time) bool {

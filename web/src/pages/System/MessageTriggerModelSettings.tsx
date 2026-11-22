@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useId, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Card, Field, Input, selectClassName } from '@/components/ui';
 import { getMessageTriggerModel, saveMessageTriggerModel, type MessageTriggerModelSettings as ModelSettings } from '@/api/messageTriggers';
@@ -9,31 +9,44 @@ interface ModelDraft {
   model: string;
   apiKey: string;
   timeout: string;
+  sendImages: boolean;
 }
 
 function toDraft(settings: ModelSettings): ModelDraft {
   return {
-    apiType: settings?.api_type === 'responses' ? 'responses' : 'chat_completions',
+    apiType: parseProtocol(settings?.api_type),
     baseURL: settings?.base_url ?? '',
     model: settings?.model ?? '',
     apiKey: settings?.api_key ?? '',
     timeout: settings?.timeout_seconds?.toString() ?? '',
+    sendImages: settings?.send_images ?? false,
   };
 }
 
 type Feedback = { status: 'passed' } | { status: 'failed'; details: string };
 
-const endpointPaths: Record<ModelDraft['apiType'], string> = {
+const geminiBaseURL = 'https://generativelanguage.googleapis.com/v1beta';
+const endpointPaths = {
   chat_completions: '/chat/completions',
   responses: '/responses',
 };
 
-function modelRequestURL(baseURL: string, apiType: ModelDraft['apiType']): string {
+function parseProtocol(value?: string): ModelDraft['apiType'] {
+  return value === 'responses' || value === 'gemini' ? value : 'chat_completions';
+}
+
+function modelRequestURL(baseURL: string, apiType: ModelDraft['apiType'], model: string): string {
   const address = baseURL.trim();
   if (!/^https?:\/\/[^/\s@]+(?:\/|$)/i.test(address) || /[\\?#]/.test(address)) return '';
+  const modelID = model.trim().replace(/^models\//, '');
+  if (apiType === 'gemini' && !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(modelID)) return '';
   try {
     const url = new URL(address);
-    url.pathname = (url.pathname + endpointPaths[apiType]).replace(/\/{2,}/g, '/');
+    const endpoint = apiType === 'gemini'
+      ? `/models/${modelID}:generateContent`
+      : endpointPaths[apiType];
+    const basePath = apiType === 'gemini' && /^\/+$/u.test(url.pathname) ? '/v1beta' : url.pathname;
+    url.pathname = (basePath + endpoint).replace(/\/{2,}/g, '/');
     return url.href;
   } catch {
     return '';
@@ -42,6 +55,7 @@ function modelRequestURL(baseURL: string, apiType: ModelDraft['apiType']): strin
 
 export default function MessageTriggerModelSettings({ onSaved }: { onSaved: () => void }) {
   const { t } = useTranslation();
+  const sendImagesHintId = useId();
   const [draft, setDraft] = useState<ModelDraft | null>(null);
   const [loadCount, setLoadCount] = useState(0);
   const [loadError, setLoadError] = useState('');
@@ -63,10 +77,20 @@ export default function MessageTriggerModelSettings({ onSaved }: { onSaved: () =
     setFeedback(null);
   }
 
+  function selectProtocol(value: string) {
+    const apiType = parseProtocol(value);
+    setDraft(current => current ? {
+      ...current,
+      apiType,
+      baseURL: apiType === 'gemini' && !current.baseURL.trim() ? geminiBaseURL : current.baseURL,
+    } : null);
+    setFeedback(null);
+  }
+
   const timeoutSeconds = draft?.timeout ? Number(draft.timeout) : undefined;
   const timeoutValid = timeoutSeconds === undefined || (Number.isInteger(timeoutSeconds) && timeoutSeconds >= 0 && timeoutSeconds <= 300);
   const valid = draft?.baseURL.trim() && draft.model.trim() && timeoutValid;
-  const requestURL = draft ? modelRequestURL(draft.baseURL, draft.apiType) : '';
+  const requestURL = draft ? modelRequestURL(draft.baseURL, draft.apiType, draft.model) : '';
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -80,6 +104,7 @@ export default function MessageTriggerModelSettings({ onSaved }: { onSaved: () =
         model: draft.model.trim(),
         api_key: draft.apiKey,
         timeout_seconds: timeoutSeconds,
+        send_images: draft.sendImages,
       });
       setDraft(toDraft(saved));
       setFeedback({ status: 'passed' });
@@ -102,9 +127,10 @@ export default function MessageTriggerModelSettings({ onSaved }: { onSaved: () =
           <fieldset disabled={saving} className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label={t('messageTriggerModel.protocol')}>
-                <select className={selectClassName} value={draft.apiType} onChange={event => update('apiType', event.target.value === 'responses' ? 'responses' : 'chat_completions')}>
+                <select className={selectClassName} value={draft.apiType} onChange={event => selectProtocol(event.target.value)}>
                   <option value="chat_completions">{endpointPaths.chat_completions}</option>
                   <option value="responses">{endpointPaths.responses}</option>
+                  <option value="gemini">{t('messageTriggerModel.geminiProtocol')}</option>
                 </select>
               </Field>
               <Field label={t('messageTriggerModel.timeout')} hint={t('messageTriggerModel.timeoutHint')}>
@@ -113,7 +139,8 @@ export default function MessageTriggerModelSettings({ onSaved }: { onSaved: () =
             </div>
             <div className="space-y-2">
               <Field label={t('messageTriggerModel.baseURL')} hint={t('messageTriggerModel.baseURLHint')}>
-                <Input required inputMode="url" spellCheck={false} placeholder="https://api.example.com/v1" value={draft.baseURL} onChange={event => update('baseURL', event.target.value)} />
+                <Input required inputMode="url" spellCheck={false} placeholder={draft.apiType === 'gemini' ? geminiBaseURL : 'https://api.example.com/v1'}
+                  value={draft.baseURL} onChange={event => update('baseURL', event.target.value)} />
               </Field>
               {requestURL && (
                 <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
@@ -129,6 +156,16 @@ export default function MessageTriggerModelSettings({ onSaved }: { onSaved: () =
               <Field label={t('messageTriggerModel.apiKey')}>
                 <Input spellCheck={false} autoComplete="off" value={draft.apiKey} onChange={event => update('apiKey', event.target.value)} />
               </Field>
+            </div>
+            <div className="space-y-1">
+              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                <input type="checkbox" checked={draft.sendImages} onChange={event => update('sendImages', event.target.checked)}
+                  aria-describedby={sendImagesHintId} className="accent-accent" />
+                {t('messageTriggerModel.sendImages')}
+              </label>
+              <p id={sendImagesHintId} className="pl-5 text-xs text-gray-500 dark:text-gray-400">
+                {t('messageTriggerModel.sendImagesHint')}
+              </p>
             </div>
           </fieldset>
           <Button type="submit" loading={saving} disabled={!valid}>{t(saving ? 'messageTriggerModel.testing' : 'messageTriggerModel.testAndSave')}</Button>

@@ -1057,7 +1057,7 @@ end = "06:00"
 
 After the grouped conditions match, `trigger_mode = "direct"` runs the action immediately. Use `trigger_mode = "manual"` to ask an administrator to approve it first. Use `trigger_mode = "intent"` to ask the model for a decision, with a natural-language prompt in `intent_prompt`.
 
-Configure the shared intent model in the Web dashboard or at the top level of `config.toml`. Before saving, the Web dashboard sends a test request with synthetic input and validates the response. It rejects the save if the test request fails or the response is invalid. After editing the file directly, reload the configuration. The `base_url`, `model`, and `api_type` settings support environment references. Rule values are read literally.
+Configure the shared intent model in the Web dashboard or at the top level of `config.toml`. Before saving, the Web dashboard tests structured output with synthetic input. If image input is enabled, it also tests with a sample image. The save succeeds when the checks pass. After editing the file directly, reload the configuration. The `base_url`, `model`, and `api_type` settings support environment references. Rule values are read literally.
 
 ```toml
 [message_trigger_model]
@@ -1065,14 +1065,19 @@ base_url = "https://model.example.com/v1"
 api_type = "chat_completions"
 model = "your-model"
 api_key = "your-api-key"
+send_images = false
 timeout_seconds = 10
 ```
 
 `api_type = "chat_completions"` is the default and appends `/chat/completions` to `base_url`. Use `api_type = "responses"` for `/responses`. Enter `api_key` directly or leave it empty for an endpoint without authentication. The default timeout is 10 seconds.
 
+For the native Gemini API, select **Gemini native (generateContent)** or set `api_type = "gemini"`. Use `https://generativelanguage.googleapis.com/v1beta` as the Base URL. Enter the model ID with or without the `models/` prefix. cc-connect appends `/models/{model}:generateContent` and requests structured JSON output. [Gemini Generate Content API](https://ai.google.dev/api/generate-content)
+
 For authorized users, the Web dashboard displays the saved `api_key` in plain text in the API key field. The test-and-save action tests the current settings and saves the field's value on success. Leave the field empty to clear the saved key. **Raw Config** masks the key. Legacy `api_key_env` settings are managed manually in TOML and still apply when `api_key` is empty. Web saves use file mode `0600` on Unix.
 
 The model receives `intent_prompt`, recent messages from the same session, and the original trigger message. By default, cc-connect requests native `json_schema` structured output on Chat Completions and Responses, including the official DeepSeek Responses API. For the official DeepSeek Chat Completions API, cc-connect requests `json_object` and validates the returned JSON against the same schema locally. [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) · [DeepSeek Responses](https://api-docs.deepseek.com/api/create-response/)
+
+Enable **Send images to the intent model** or set `send_images = true` to send up to six available images from the trigger message and group context to the configured model provider. This setting defaults to off and is available for all three API protocols. The chosen model and endpoint must accept image input alongside the structured output request.
 
 The response must be a JSON object containing only `decision` and `reason`. The `decision` field accepts `yes`, `no`, or `confirm`, and `reason` must be a string. `yes` runs the action, `no` declines it, and `confirm` waits for administrator approval. The confirmation card shows the model's reason. The action is skipped if approval is needed and there is no eligible administrator, or if the model call fails, times out, or returns an invalid decision.
 

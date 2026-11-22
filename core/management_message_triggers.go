@@ -97,7 +97,11 @@ func (m *ManagementServer) saveVerifiedMessageTriggerModel(w http.ResponseWriter
 		}
 	}
 	if err := model.Probe(r.Context()); err != nil {
-		mgmtError(w, http.StatusBadRequest, "model structured output test failed: "+err.Error())
+		failure := "model structured output test failed: "
+		if model.SendImages {
+			failure = "model image and structured output test failed: "
+		}
+		mgmtError(w, http.StatusBadRequest, failure+err.Error())
 		return
 	}
 	if err := m.saveMessageTriggerModel(model); err != nil {

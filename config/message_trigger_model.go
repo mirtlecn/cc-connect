@@ -83,6 +83,7 @@ func writeMessageTriggerModel(data []byte, model core.MessageTriggerModel) error
 	fields := map[string]any{
 		"api_type": model.APIType, "base_url": model.BaseURL, "model": model.Model,
 		"api_key": model.APIKey, "api_key_env": model.APIKeyEnv, "timeout_seconds": model.TimeoutSeconds,
+		"send_images": model.SendImages,
 	}
 	var encoded strings.Builder
 	if err := toml.NewEncoder(&encoded).Encode(fields); err != nil {

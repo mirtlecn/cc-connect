@@ -65,6 +65,7 @@ type MessageTriggerModel struct {
 	APIKeyEnv      string `toml:"api_key_env,omitempty" json:"-" env:"-"` // legacy configuration
 	TimeoutSeconds int    `toml:"timeout_seconds,omitempty" json:"timeout_seconds,omitempty"`
 	APIType        string `toml:"api_type,omitempty" json:"api_type"`
+	SendImages     bool   `toml:"send_images,omitempty" json:"send_images"`
 }
 
 var triggerModelEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -93,8 +94,14 @@ func (m MessageTriggerModel) Validate() error {
 	if strings.TrimSpace(m.Model) == "" {
 		return fmt.Errorf("model is required")
 	}
-	if protocol := m.protocol(); protocol != "responses" && protocol != "chat_completions" {
-		return fmt.Errorf("api_type must be responses or chat_completions")
+	switch m.protocol() {
+	case "responses", "chat_completions":
+	case "gemini":
+		if geminiTriggerModelID(m.Model) == "" {
+			return fmt.Errorf("model must be a Gemini model ID with an optional models/ prefix")
+		}
+	default:
+		return fmt.Errorf("api_type must be responses, chat_completions or gemini")
 	}
 	if m.APIKeyEnv != "" && !triggerModelEnvName.MatchString(m.APIKeyEnv) {
 		return fmt.Errorf("api_key_env must be an environment variable name")

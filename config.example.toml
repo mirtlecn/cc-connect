@@ -86,12 +86,13 @@ level = "info" # debug, info, warn, error
 # DeepSeek 官方 Chat Completions 使用 json_object，cc-connect 在本机按同一套规则校验。
 # [message_trigger_model]
 # base_url = "https://model.example.com/v1"
-# api_type = "chat_completions"    # Default / 默认. Use responses for /responses.
+# api_type = "chat_completions"    # Default / 默认. Also supports responses and gemini.
 # model = "your-model"
 # api_key = "your-api-key"         # Optional literal credential / 可选，直接填写密钥
 # Legacy api_key_env can be set manually in TOML and applies when api_key is empty.
 # 旧版 api_key_env 可在 TOML 中手工配置，在 api_key 为空时生效。
 # timeout_seconds = 10             # Default 10 seconds / 默认 10 秒
+# send_images = false              # Forward images to the intent model / 将图片发送给意图模型
 
 # =============================================================================
 # Global Providers / 全局服务商
