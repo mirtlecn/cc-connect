@@ -547,6 +547,7 @@ type queuedMessage struct {
 	replyCtx          any
 	triggerReplyCtx   *messageTriggerReply
 	content           string
+	loadAgentContext  func(context.Context) (string, []ImageAttachment)
 	images            []ImageAttachment
 	files             []FileAttachment
 	fromVoice         bool
@@ -3132,15 +3133,7 @@ func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *Messag
 	if trigger == nil || (!msg.Trigger.RuleOnly && !msg.triggerConfirmed) {
 		content = e.resolveAlias(content)
 	}
-	if msg.ExtraContent != "" {
-		if content == "" {
-			msg.Content = msg.ExtraContent
-		} else {
-			msg.Content = msg.ExtraContent + "\n" + content
-		}
-	} else {
-		msg.Content = content
-	}
+	msg.Content = prependMessageContext(msg.ExtraContent, content)
 
 	// Rate limit check (per-user role-based, then global fallback)
 	if msg.triggerRateLimited || (!msg.triggerRateChecked && !e.checkRateLimit(msg)) {
@@ -3247,6 +3240,7 @@ func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *Messag
 		}
 		if content != questionContent {
 			msg.Content = content
+			msg.LoadExtraContent = nil
 		}
 		if e.handlePendingPermission(p, msg, content, interactiveKey) {
 			return
@@ -3289,6 +3283,7 @@ func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *Messag
 		}
 	}
 
+	agentPrefix := ""
 	if trigger != nil {
 		if e.ctx.Err() != nil || e.triggerSourceRecalled(p, msg.MessageID) {
 			msg.finishProcessingFeedback(MessageProcessingCancelled)
@@ -3310,7 +3305,8 @@ func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *Messag
 			return
 		}
 		if trigger.Prompt != "" {
-			msg.Content = trigger.Prompt + "\n\n" + msg.Content
+			agentPrefix = trigger.Prompt + "\n\n"
+			msg.Content = agentPrefix + msg.Content
 		}
 		msg.finishProcessingFeedback(MessageProcessingHandOff)
 		if e.ctx.Err() != nil || e.triggerSourceRecalled(p, msg.MessageID) || !e.isCurrentMessageTrigger(trigger) {
@@ -3319,6 +3315,12 @@ func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *Messag
 	}
 	if e.discardStaleUserMessageIfNeeded(interactiveKey, msg) {
 		return
+	}
+	if load := msg.LoadExtraContent; load != nil {
+		msg.loadAgentContext = func(ctx context.Context) (string, []ImageAttachment) {
+			extra, images := load(ctx)
+			return agentPrefix + prependMessageContext(extra, content), images
+		}
 	}
 
 	session := sessions.GetOrCreateActive(msg.SessionKey)
@@ -3431,6 +3433,24 @@ func runMessageAccepted(msg *Message) {
 	callback := msg.OnAccepted
 	msg.OnAccepted = nil
 	callback()
+}
+
+func prependMessageContext(extra, content string) string {
+	if extra == "" {
+		return content
+	}
+	if content == "" {
+		return extra
+	}
+	return extra + "\n" + content
+}
+
+func (e *Engine) loadMessageAgentContext(load func(context.Context) (string, []ImageAttachment), content *string, images *[]ImageAttachment) {
+	if load != nil {
+		resolved, historyImages := load(e.ctx)
+		*content = resolved
+		*images = append(historyImages, *images...)
+	}
 }
 
 func (e *Engine) maybeAutoResetSessionOnIdle(p Platform, msg *Message, sessions *SessionManager, interactiveKey string, session *Session, lockGen uint64) (*Session, uint64) {
@@ -3560,6 +3580,7 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 		replyCtx:          msg.ReplyCtx,
 		triggerReplyCtx:   msg.triggerReplyCtx,
 		content:           msg.Content,
+		loadAgentContext:  msg.loadAgentContext,
 		images:            msg.Images,
 		files:             msg.Files,
 		fromVoice:         msg.FromVoice,
@@ -4188,13 +4209,15 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	}
 
 	turnStart := time.Now()
-
-	e.i18n.DetectAndSet(msg.Content)
-	session.AddHistory("user", msg.Content)
-	// Persist user message immediately so crashes between user input and
-	// assistant reply don't lose it (the assistant-side Save below depends
-	// on the turn completing without a process crash).
-	sessions.Save()
+	recordUserMessage := func() {
+		e.i18n.DetectAndSet(msg.Content)
+		session.AddHistory("user", msg.Content)
+		// Persist the user message before sending it to the Agent.
+		sessions.Save()
+	}
+	if msg.loadAgentContext == nil {
+		recordUserMessage()
+	}
 
 	// Use the agent override when available (multi-workspace mode)
 	var agentOverride Agent
@@ -4270,6 +4293,13 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 			stopTyping()
 		}
 	}()
+	if msg.loadAgentContext != nil {
+		e.loadMessageAgentContext(msg.loadAgentContext, &msg.Content, &msg.Images)
+		if e.ctx.Err() != nil || state.isStopped() || e.triggerSourceRecalled(p, msg.MessageID) {
+			return
+		}
+		recordUserMessage()
+	}
 
 	// Stop the unsolicited reader (if running) and hand off event channel
 	// ownership to this foreground turn. Only drain events when the previous
@@ -6863,6 +6893,12 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					}
 				}
 
+				if queued.loadAgentContext != nil {
+					e.loadMessageAgentContext(queued.loadAgentContext, &queued.content, &queued.images)
+					if e.ctx.Err() != nil || state.isStopped() || e.triggerSourceRecalled(queued.platform, queued.messageID) {
+						return
+					}
+				}
 				queuedPrompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey)
 
 				state.mu.Lock()
@@ -7199,9 +7235,6 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		state.currentTurnUserMessageTimeMs = queued.userMessageTimeMs
 		state.mu.Unlock()
 
-		e.i18n.DetectAndSet(queued.content)
-		prompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey)
-
 		state.mu.Lock()
 		as := state.agentSession // capture under lock to avoid race with cleanup (mirrors #1436)
 		state.mu.Unlock()
@@ -7210,6 +7243,14 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 			e.notifyDroppedQueuedMessages(state, fmt.Errorf("agent session ended"))
 			return false
 		}
+		if queued.loadAgentContext != nil {
+			e.loadMessageAgentContext(queued.loadAgentContext, &queued.content, &queued.images)
+			if e.ctx.Err() != nil || state.isStopped() || e.triggerSourceRecalled(queued.platform, queued.messageID) {
+				return false
+			}
+		}
+		e.i18n.DetectAndSet(queued.content)
+		prompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey)
 
 		drainEvents(as.Events())
 

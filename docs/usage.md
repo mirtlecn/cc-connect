@@ -986,6 +986,8 @@ Existing flat rules still load. Group and identity requirements become grouped c
 
 Rules are checked from the bottom of the list upward and stop at the first match. A direct mention of the bot follows the usual conversation flow.
 
+With `group_chat_history_share` enabled, a Feishu or Lark Agent turn can use pending group context, including up to six images from the three most recent messages with images. Older images, images beyond the limit, and failed downloads appear as `[image]`. [Feishu group context settings](./feishu.md)
+
 Add a rule to an existing Feishu project. To enable confirmation, set a valid `admin_from` on that project's `[[projects]]` table, such as `admin_from = "ou_example_admin"`.
 
 ```toml

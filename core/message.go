@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -458,6 +459,10 @@ type Message struct {
 	// see in the card. Plain-text answers and platforms without in-place card
 	// updates leave it false and keep the echo.
 	CardAnswerRendered bool
+	// LoadExtraContent resolves pending context and its images for an admitted Agent turn.
+	// ExtraContent contains the text available during routing and confirmation.
+	LoadExtraContent func(context.Context) (string, []ImageAttachment) `json:"-"`
+	loadAgentContext func(context.Context) (string, []ImageAttachment)
 }
 
 // EventType distinguishes different kinds of agent output.

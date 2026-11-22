@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/chenhg5/cc-connect/core"
 
@@ -230,7 +231,7 @@ type Platform struct {
 	attachmentStageMu sync.Mutex
 	attachmentStages  map[string]*attachmentStage
 
-	// pendingGroupHistory keeps text/post messages that were observed in an
+	// pendingGroupHistory keeps text, posts and image references observed in an
 	// allowed group chat without an explicit bot trigger. It is deliberately
 	// platform-local and in-memory: the next accepted agent turn consumes the
 	// snapshot, while slash commands that are handled by core leave it intact.
@@ -351,6 +352,7 @@ type imageBatchEntry struct {
 	chatName     string
 	rctx         replyContext
 	quoted       quotedMessage
+	loadExtra    func(context.Context) (string, []core.ImageAttachment)
 	onAccepted   func()
 	images       []core.ImageAttachment
 	messageIDs   []string
@@ -1780,6 +1782,7 @@ func (p *Platform) dispatchImageBatchEntry(entry *imageBatchEntry) {
 		UserID:    entry.userID, UserName: entry.userName, ChatName: entry.chatName,
 		Content:           "",
 		ExtraContent:      entry.quoted.text,
+		LoadExtraContent:  entry.loadExtra,
 		OnAccepted:        entry.onAccepted,
 		Images:            append(entry.quoted.images, entry.images...),
 		ReplyCtx:          entry.rctx,
@@ -1844,9 +1847,9 @@ func (p *Platform) groupHistoryScope(msg *larkim.EventMessage, chatID string) st
 	return "chat:" + chatID
 }
 
-func (p *Platform) historyText(msgType, content string, mentions []*larkim.MentionEvent) string {
+func (p *Platform) historyText(msgType, content string, mentions []*larkim.MentionEvent) (string, []groupHistoryImage) {
 	if content == "" {
-		return ""
+		return "", nil
 	}
 	switch msgType {
 	case "text":
@@ -1854,21 +1857,35 @@ func (p *Platform) historyText(msgType, content string, mentions []*larkim.Menti
 			Text string `json:"text"`
 		}
 		if err := json.Unmarshal([]byte(content), &textBody); err != nil {
-			return ""
+			return "", nil
 		}
-		return stripMentions(textBody.Text, mentions, p.getBotOpenID())
+		return stripMentions(textBody.Text, mentions, p.getBotOpenID()), nil
 	case "post":
-		return strings.TrimSpace(extractPostPlainText(content))
+		var images []groupHistoryImage
+		text := extractPostText(content, &images)
+		trimmed := strings.TrimLeftFunc(text, unicode.IsSpace)
+		for i := range images {
+			images[i].offset -= len(text) - len(trimmed)
+		}
+		return strings.TrimRightFunc(trimmed, unicode.IsSpace), images
+	case "image":
+		var body struct {
+			ImageKey string `json:"image_key"`
+		}
+		if json.Unmarshal([]byte(content), &body) == nil && body.ImageKey != "" {
+			return groupHistoryImagePlaceholder, []groupHistoryImage{{key: body.ImageKey}}
+		}
+		return groupHistoryImagePlaceholder, nil
 	default:
-		return ""
+		return "", nil
 	}
 }
 
 func (p *Platform) rememberGroupHistory(scope, messageID, msgType, content string, mentions []*larkim.MentionEvent, senderID, senderType string) {
-	if !p.groupChatHistoryShare || scope == "" || !isGroupHistoryMessageType(msgType) {
+	if !p.groupChatHistoryShare || scope == "" {
 		return
 	}
-	text := p.historyText(msgType, content, mentions)
+	text, images := p.historyText(msgType, content, mentions)
 	if text == "" {
 		return
 	}
@@ -1882,6 +1899,7 @@ func (p *Platform) rememberGroupHistory(scope, messageID, msgType, content strin
 		senderID:   senderID,
 		senderType: senderType,
 		text:       text,
+		images:     images,
 	}
 	history := append(p.pendingGroupHistory[scope], entry)
 	if len(history) > maxPendingGroupHistoryEntries {
@@ -1983,12 +2001,18 @@ func (p *Platform) historySenderName(entry groupHistoryEntry) string {
 }
 
 func (p *Platform) formatGroupHistory(ctx groupHistoryContext) string {
-	if len(ctx.entries) == 0 {
-		return ""
+	text, _ := p.renderGroupHistory(ctx, nil)
+	return text
+}
+
+func (p *Platform) renderGroupHistory(history groupHistoryContext, resolved map[uint64]map[int]core.ImageAttachment) (string, []core.ImageAttachment) {
+	if len(history.entries) == 0 {
+		return "", nil
 	}
 	var b strings.Builder
+	var images []core.ImageAttachment
 	formatted := 0
-	for _, entry := range ctx.entries {
+	for _, entry := range history.entries {
 		if entry.messageID != "" && p.isMessageRecalled(entry.messageID) {
 			continue
 		}
@@ -1996,14 +2020,37 @@ func (p *Platform) formatGroupHistory(ctx groupHistoryContext) string {
 			b.WriteString("--- Recent Feishu group messages (context only) ---\n")
 		}
 		name := strings.NewReplacer("\n", " ", "\r", "").Replace(p.historySenderName(entry))
-		fmt.Fprintf(&b, "%s:\n%s\n\n", name, entry.text)
+		text := entry.text
+		if attached := resolved[entry.id]; len(attached) > 0 {
+			var withoutPlaceholders strings.Builder
+			from := 0
+			firstAttachment := len(images) + 1
+			for i, ref := range entry.images {
+				if image, ok := attached[i]; ok {
+					withoutPlaceholders.WriteString(text[from:ref.offset])
+					from = ref.offset + len(groupHistoryImagePlaceholder)
+					if len(image.Data) != 0 {
+						images = append(images, image)
+					}
+				}
+			}
+			withoutPlaceholders.WriteString(text[from:])
+			text = strings.TrimSpace(withoutPlaceholders.String())
+			switch {
+			case firstAttachment == len(images):
+				name += fmt.Sprintf(" (attachment %d)", firstAttachment)
+			case firstAttachment < len(images):
+				name += fmt.Sprintf(" (attachments %d–%d)", firstAttachment, len(images))
+			}
+		}
+		fmt.Fprintf(&b, "%s:\n%s\n\n", name, text)
 		formatted++
 	}
 	if formatted == 0 {
-		return ""
+		return "", nil
 	}
 	b.WriteString("---\n\n")
-	return b.String()
+	return b.String(), images
 }
 
 func joinFeishuExtraContent(parts ...string) string {
@@ -2128,14 +2175,15 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		trigger.RuleOnly = true
 	}
 
-	// With history sharing enabled, observe ordinary text/post messages only
+	activeThreadAttachment := p.threadIsolation && isAttachmentMsgType(msgType) && p.isActiveThreadSession(sessionKey)
+	// With history sharing enabled, observe ordinary messages only
 	// after the chat-level allow list has admitted the chat. Do this before the
 	// existing mention filter and before allow_from: the chat controls whether
 	// cc-connect may observe the conversation, while allow_from controls who may
 	// trigger an agent turn.
 	var groupHistoryCtx groupHistoryContext
 	if p.groupChatHistoryShare && chatType == "group" && !groupReplyAllForChat && botOpenID != "" &&
-		!botMentioned && !atEveryone && isGroupHistoryMessageType(msgType) {
+		!botMentioned && !atEveryone && (isGroupHistoryMessageType(msgType) || (msgType == "image" && !activeThreadAttachment)) {
 		if !core.AllowList(p.allowChat, chatID) {
 			slog.Debug(p.tag()+": group history ignored for unauthorized chat", "chat_id", chatID)
 			return nil
@@ -2180,7 +2228,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 			// With attachment_wait = "mention" (#2186) the attachment is
 			// staged instead, and handed over with the sender's next @bot
 			// message in this thread.
-			case p.threadIsolation && isAttachmentMsgType(msgType) && p.isActiveThreadSession(sessionKey):
+			case activeThreadAttachment:
 				stageAttachmentOnly = p.attachmentWaitMentionEnabled() && canStageAttachment(msgType)
 				slog.Debug(p.tag()+": passing attachment through active thread without mention",
 					"chat_id", chatID, "session_key", sessionKey, "msg_type", msgType, "message_id", messageID,
@@ -2355,9 +2403,19 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 	if len(stagedNotes) > 0 {
 		quotedExtra = joinFeishuExtraContent(quotedExtra, strings.Join(stagedNotes, "\n"))
 	}
+	loadExtraContent := func(extra string) func(context.Context) (string, []core.ImageAttachment) {
+		if !groupHistoryCtx.hasImages() {
+			return nil
+		}
+		return func(ctx context.Context) (string, []core.ImageAttachment) {
+			text, images := p.loadGroupHistoryImages(ctx, groupHistoryCtx, quoted.images)
+			return joinFeishuExtraContent(text, extra), images
+		}
+	}
 	dispatchCore := func(msg *core.Message) {
 		msg.Trigger = trigger
 		if historyText != "" {
+			msg.LoadExtraContent = loadExtraContent(msg.ExtraContent)
 			msg.ExtraContent = joinFeishuExtraContent(historyText, msg.ExtraContent)
 		}
 		msg.OnAccepted = groupHistoryCtx.onAccepted
@@ -2445,7 +2503,8 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 				userName:     userName,
 				chatName:     chatName,
 				rctx:         rctx,
-				quoted:       quotedMessage{text: historyText, images: quoted.images},
+				quoted:       quotedMessage{text: joinFeishuExtraContent(historyText, quoted.text), images: quoted.images},
+				loadExtra:    loadExtraContent(quoted.text),
 				onAccepted:   groupHistoryCtx.onAccepted,
 				images:       []core.ImageAttachment{{MimeType: mimeType, Data: imgData}},
 				messageIDs:   []string{messageID},
@@ -3004,6 +3063,7 @@ type groupHistoryEntry struct {
 	senderID   string
 	senderType string
 	text       string
+	images     []groupHistoryImage
 }
 
 // groupHistoryContext is captured synchronously when a triggering event is
@@ -3324,16 +3384,15 @@ func formatReplyChain(chain []chainMessage) string {
 
 // extractPostPlainText extracts plain text from a Lark post (rich text) JSON content.
 func extractPostPlainText(content string) string {
+	return extractPostText(content, nil)
+}
+
+// extractPostText also records the offsets of generated image placeholders
+// when a group history entry can later resolve them to real attachments.
+func extractPostText(content string, images *[]groupHistoryImage) string {
 	var post struct {
-		Content [][]struct {
-			Tag      string `json:"tag"`
-			Text     string `json:"text"`
-			Href     string `json:"href,omitempty"`
-			Language string `json:"language,omitempty"`
-			UserId   string `json:"user_id,omitempty"`
-			UserName string `json:"user_name,omitempty"`
-		} `json:"content"`
-		Title string `json:"title"`
+		Content [][]postElement `json:"content"`
+		Title   string          `json:"title"`
 	}
 	// Post content may be wrapped in a locale key like {"zh_cn": {...}}.
 	// Try direct parse first, then try extracting from locale wrapper.
@@ -3355,43 +3414,47 @@ func extractPostPlainText(content string) string {
 	if len(post.Content) == 0 {
 		return ""
 	}
-	var parts []string
-	if post.Title != "" {
-		parts = append(parts, post.Title)
+	var text strings.Builder
+	text.WriteString(post.Title)
+	writePart := func(part string) {
+		if text.Len() != 0 {
+			text.WriteByte('\n')
+		}
+		text.WriteString(part)
 	}
 	for _, para := range post.Content {
-		var line []string
+		var line strings.Builder
 		for _, elem := range para {
 			switch elem.Tag {
-			case "text":
-				if elem.Text != "" {
-					line = append(line, elem.Text)
-				}
+			case "text", "markdown":
+				line.WriteString(elem.Text)
 			case "a":
 				if elem.Text != "" && elem.Href != "" {
-					line = append(line, fmt.Sprintf("[%s](%s)", elem.Text, elem.Href))
-				} else if elem.Text != "" {
-					line = append(line, elem.Text)
-				}
-			case "markdown":
-				if elem.Text != "" {
-					line = append(line, elem.Text)
+					fmt.Fprintf(&line, "[%s](%s)", elem.Text, elem.Href)
+				} else {
+					line.WriteString(elem.Text)
 				}
 			case "at":
 				switch {
 				case elem.UserId == "all":
-					line = append(line, "@all")
+					line.WriteString("@all")
 				case elem.UserName != "":
-					line = append(line, "@"+elem.UserName)
+					line.WriteString("@" + elem.UserName)
 				case elem.UserId != "":
-					line = append(line, "@user")
+					line.WriteString("@user")
 				}
 			case "img":
-				line = append(line, "[image]")
+				if images != nil && elem.ImageKey != "" && len(*images) < maxGroupHistoryImages {
+					offset := text.Len() + line.Len()
+					if text.Len() != 0 {
+						offset++ // separator before the pending line
+					}
+					*images = append(*images, groupHistoryImage{offset: offset, key: elem.ImageKey})
+				}
+				line.WriteString(groupHistoryImagePlaceholder)
 			case "code_block":
 				if elem.Text != "" {
-					lang := elem.Language
-					line = append(line, "```"+lang+"\n"+elem.Text+"\n```")
+					line.WriteString("```" + elem.Language + "\n" + elem.Text + "\n```")
 				}
 			case "hr":
 				// Lark posts render an `hr` element as a horizontal rule;
@@ -3400,18 +3463,18 @@ func extractPostPlainText(content string) string {
 				// recognize the boundary. We flush any pending line text
 				// first so the rule is not glued to surrounding text
 				// (issue #508; related #470/#472).
-				if len(line) > 0 {
-					parts = append(parts, strings.Join(line, ""))
-					line = line[:0]
+				if line.Len() > 0 {
+					writePart(line.String())
+					line.Reset()
 				}
-				parts = append(parts, "---")
+				writePart("---")
 			}
 		}
-		if len(line) > 0 {
-			parts = append(parts, strings.Join(line, ""))
+		if line.Len() > 0 {
+			writePart(line.String())
 		}
 	}
-	return strings.Join(parts, "\n")
+	return text.String()
 }
 
 // extractInteractiveCardText extracts readable text from a Feishu interactive card JSON.
