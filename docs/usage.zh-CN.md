@@ -897,7 +897,7 @@ Claude Code 会自动创建定时任务。对依赖记忆文件的其他 Agent�
 
 规则按列表从下往上检查，首条命中即停止。直接 @ 机器人时按原有对话流程处理。
 
-飞书或 Lark 开启 `group_chat_history_share` 后，Agent 回复可使用待处理的群上下文。最近三条带图历史消息合计最多附带六张图，较早、超额或下载失败的图片以 `[image]` 显示。[飞书群上下文设置](./feishu.md)
+飞书或 Lark 开启 `group_chat_history_share` 后，默认按群聊或话题缓存并发送最多 10 条待用消息。渠道配置项 `group_chat_history_limit` 可填正整数，同时调整缓存和发送条数。省略或填 `0` 时使用 `10`。最近三条带图历史消息合计最多附带六张图，较早、超额或下载失败的图片以 `[image]` 显示。[飞书群上下文设置](./feishu.md)
 
 以下规则可添加到已配置飞书渠道的项目。使用确认前，在该项目的 `[[projects]]` 表中填写有效的 `admin_from`，例如 `admin_from = "ou_example_admin"`。
 

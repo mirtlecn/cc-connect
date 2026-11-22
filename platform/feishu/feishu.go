@@ -168,6 +168,7 @@ type Platform struct {
 	shareSessionInChannel      bool
 	threadIsolation            bool
 	groupChatHistoryShare      bool
+	groupChatHistoryLimit      int
 	// noReplyToTrigger: when true, send via Create instead of Im.Message.Reply (no quote to the user's message).
 	noReplyToTrigger bool
 	resolveMentions  bool
@@ -474,6 +475,22 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 	shareSessionInChannel, _ := opts["share_session_in_channel"].(bool)
 	threadIsolation, _ := opts["thread_isolation"].(bool)
 	groupChatHistoryShare, _ := opts["group_chat_history_share"].(bool)
+	groupChatHistoryLimit := defaultGroupChatHistoryLimit
+	if raw, ok := opts["group_chat_history_limit"]; ok {
+		count := int64(-1)
+		switch value := raw.(type) {
+		case int:
+			count = int64(value)
+		case int64:
+			count = value
+		}
+		if count < 0 || int64(int(count)) != count {
+			return nil, fmt.Errorf("%s: group_chat_history_limit must be a non-negative integer", name)
+		}
+		if count > 0 {
+			groupChatHistoryLimit = int(count)
+		}
+	}
 	resolveMentionsOpt, _ := opts["resolve_mentions"].(bool)
 	noReplyToTrigger := false
 	if v, ok := opts["reply_to_trigger"].(bool); ok && !v {
@@ -641,6 +658,7 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		shareSessionInChannel:      shareSessionInChannel,
 		threadIsolation:            threadIsolation,
 		groupChatHistoryShare:      groupChatHistoryShare,
+		groupChatHistoryLimit:      groupChatHistoryLimit,
 		resolveMentions:            resolveMentionsOpt,
 		noReplyToTrigger:           noReplyToTrigger,
 		client:                     lark.NewClient(appID, appSecret, clientOpts...),
@@ -1901,9 +1919,16 @@ func (p *Platform) rememberGroupHistory(scope, messageID, msgType, content strin
 		text:       text,
 		images:     images,
 	}
-	history := append(p.pendingGroupHistory[scope], entry)
-	if len(history) > maxPendingGroupHistoryEntries {
-		history = history[len(history)-maxPendingGroupHistoryEntries:]
+	limit := p.groupChatHistoryLimit
+	if limit <= 0 {
+		limit = defaultGroupChatHistoryLimit
+	}
+	history := p.pendingGroupHistory[scope]
+	if len(history) == limit {
+		copy(history, history[1:])
+		history[len(history)-1] = entry
+	} else {
+		history = append(history, entry)
 	}
 	if p.pendingGroupHistory == nil {
 		p.pendingGroupHistory = make(map[string][]groupHistoryEntry)
@@ -1924,6 +1949,7 @@ func (p *Platform) removeGroupHistory(messageID string) {
 				kept = append(kept, entry)
 			}
 		}
+		clear(history[len(kept):])
 		if len(kept) == 0 {
 			delete(p.pendingGroupHistory, scope)
 		} else {
@@ -1964,6 +1990,7 @@ func (p *Platform) consumeGroupHistory(scope string, maxID uint64) {
 			kept = append(kept, entry)
 		}
 	}
+	clear(history[len(kept):])
 	if len(kept) == 0 {
 		delete(p.pendingGroupHistory, scope)
 		return
@@ -3052,10 +3079,8 @@ type quotedMessage struct {
 	files  []quotedFileMeta
 }
 
-// maxPendingGroupHistoryEntries bounds the per-scope in-memory buffer. The
-// feature is intentionally a small recent-context window rather than a chat
-// history store.
-const maxPendingGroupHistoryEntries = 50
+// defaultGroupChatHistoryLimit is the per-chat or per-topic context window.
+const defaultGroupChatHistoryLimit = 10
 
 type groupHistoryEntry struct {
 	id         uint64

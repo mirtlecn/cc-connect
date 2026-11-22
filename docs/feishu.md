@@ -112,6 +112,7 @@ app_secret = "QhkMpxxxxxxxxxxxxxxxxxxxx"
 # thread_isolation = true    # 可选：按飞书 thread/root 隔离群聊会话
 # group_reply_all_chats = ["oc_group_a", "oc_group_b"] # 可选：仅指定群无需 @机器人
 # group_chat_history_share = false  # 可选：共享未 @ 机器人的群消息作为下一次触发的上下文；消息本身不会触发回复
+# group_chat_history_limit = 10     # 开启共享时每个群聊或话题缓存并发送的条数，省略或填 0 使用 10
 # progress_style = "legacy"  # 可选：legacy | compact | card
 # ack_emoji = "Get"           # 可选：消息被接受处理或入队时立即添加并保留的确认表情；默认禁用
 # reaction_emoji = "OnIt"      # 可选：agent 处理期间的临时表情，结束后移除
@@ -124,7 +125,7 @@ app_secret = "QhkMpxxxxxxxxxxxxxxxxxxxx"
 > 如果应用没有交互卡片权限，或后台未配置卡片回调，可将 `enable_feishu_card = false`，让所有命令统一走纯文本回复，避免卡片发送失败后用户看不到内容。
 > `group_reply_all_chats` 可使用逗号分隔字符串（如 `"oc_group_a,oc_group_b"`）或字符串数组。非空列表仅让指定群绕过 @ 过滤，并优先于全局 `group_reply_all` 和 `require_mention`；其他群保留原有提及、@all 和已参与话题的附件规则。未配置或为空时沿用原有默认行为。此设置不放宽 `allow_from`、`allow_chat` 或 `group_only`，私聊行为不变。
 > 如果开启 `thread_isolation = true`，群聊里每个根消息 / reply thread 会对应一个独立 agent session；私聊行为保持原样。
-> `group_chat_history_share = true` 时，对仍需 @ 机器人触发普通对话的群，cc-connect 在内存中按群聊或话题保留最多 50 条待用消息，用作后续 Agent 请求的上下文。最近三条带图历史消息合计最多附带六张图片，进入 Agent 前按需下载。超出限额或下载失败的图片以 `[image]` 显示。`/status` 等由 cc-connect 处理的命令保留这段待用上下文，`/new` 会清空对应主频道或话题的上下文。
+> `group_chat_history_share = true` 时，对仍需 @ 机器人触发普通对话的群，cc-connect 默认按群聊或话题在内存中缓存最近 10 条待用消息，并将这些消息发给 Agent 作为上下文。在该渠道的 `[projects.platforms.options]` 下，可将 `group_chat_history_limit` 设为正整数，同时调整缓存和发送条数。省略或填 `0` 时使用 `10`。最近三条带图历史消息合计最多附带六张图片，进入 Agent 前按需下载。超出图片限额或下载失败的图片以 `[image]` 显示。`/status` 等由 cc-connect 处理的命令保留这段待用上下文，`/new` 会清空对应主频道或话题的上下文。
 > 在 multi-workspace 模式下，`thread_isolation = true` 也会让每个话题独立绑定 workspace；在话题内执行 `/workspace bind <name>` 不会影响同群的其他话题。已有的群级 binding 会保留为默认值，由尚未显式绑定的话题继承，因此回退到旧版本时仍可使用。
 > `progress_style = "compact"` 会把思考/工具进度合并到一条可更新消息里，减少刷屏；`legacy` 保持原有逐条发送；`card` 会使用结构化卡片（标题 + 进度块）持续更新同一条消息，观感比纯文本更清晰。
 > 已创建的进度卡更新失败时，会保留原卡片并暂存最新进度；短暂退避后，在后续进度事件到来时重试更新同一张卡片，不会退化为逐条工具消息。结束时会忽略进度退避，尝试写入最终状态。飞书卡片 PATCH 返回 `2200` 内部错误时，会先进行最多 3 次退避重试；持续故障仍可能导致卡片暂时停留在旧状态，最终回复会独立发送。
