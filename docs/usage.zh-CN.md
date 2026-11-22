@@ -973,7 +973,7 @@ timeout_seconds = 10
 
 `api_type` 默认是 `chat_completions`，服务在 `base_url` 后追加 `/chat/completions`。将其设为 `responses` 时使用 `/responses`。`api_key` 直接填写密钥。接口无需认证时可留空。默认超时为 10 秒。
 
-Web 后台只显示密钥是否已保存，配置预览会遮盖密钥值。修改 Base URL 时，旧密钥不会发送到新地址。新接口需要认证时填入对应密钥，无需认证时可清除已保存的密钥。未配置 `api_key` 时，旧配置的 `api_key_env` 仍可作为回退。Web 保存后，Unix 上配置文件的权限为 `0600`。
+获授权的用户打开 Web 设置时，API 密钥输入框会以明文显示已保存的 `api_key`。点击测试并保存后，测试通过才会保存当前输入。留空并保存可清除已保存的密钥。**原始配置**预览会遮盖密钥。旧版 `api_key_env` 通过 TOML 手工维护，在 `api_key` 为空时仍会生效。Web 保存后，Unix 上配置文件的权限为 `0600`。
 
 模型输入包括 `intent_prompt`、同一会话的近期消息和原始触发消息。cc-connect 默认在 Chat Completions 和 Responses 请求原生 `json_schema` 结构化输出，DeepSeek 官方 Responses 也使用此格式。对于 DeepSeek 官方 Chat Completions，cc-connect 请求 `json_object`，并在本机按同一套 JSON Schema 校验响应。[DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) · [DeepSeek Responses](https://api-docs.deepseek.com/api/create-response/)
 

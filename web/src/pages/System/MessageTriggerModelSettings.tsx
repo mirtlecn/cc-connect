@@ -8,8 +8,6 @@ interface ModelDraft {
   baseURL: string;
   model: string;
   apiKey: string;
-  keyConfigured: boolean;
-  clearAPIKey: boolean;
   timeout: string;
 }
 
@@ -18,18 +16,12 @@ function toDraft(settings: ModelSettings): ModelDraft {
     apiType: settings?.api_type === 'responses' ? 'responses' : 'chat_completions',
     baseURL: settings?.base_url ?? '',
     model: settings?.model ?? '',
-    apiKey: '',
-    keyConfigured: settings?.key_configured === true,
-    clearAPIKey: false,
+    apiKey: settings?.api_key ?? '',
     timeout: settings?.timeout_seconds?.toString() ?? '',
   };
 }
 
 type Feedback = { status: 'passed' } | { status: 'failed'; details: string };
-
-function normalizedBaseURL(url: string) {
-  return url.trim().replace(/\/+$/, '');
-}
 
 const endpointPaths: Record<ModelDraft['apiType'], string> = {
   chat_completions: '/chat/completions',
@@ -71,15 +63,6 @@ export default function MessageTriggerModelSettings({ onSaved }: { onSaved: () =
     setFeedback(null);
   }
 
-  function updateBaseURL(baseURL: string) {
-    setDraft(current => {
-      if (!current) return null;
-      if (normalizedBaseURL(baseURL) === normalizedBaseURL(current.baseURL)) return { ...current, baseURL };
-      return { ...current, baseURL, apiKey: '', clearAPIKey: false };
-    });
-    setFeedback(null);
-  }
-
   const timeoutSeconds = draft?.timeout ? Number(draft.timeout) : undefined;
   const timeoutValid = timeoutSeconds === undefined || (Number.isInteger(timeoutSeconds) && timeoutSeconds >= 0 && timeoutSeconds <= 300);
   const valid = draft?.baseURL.trim() && draft.model.trim() && timeoutValid;
@@ -95,7 +78,7 @@ export default function MessageTriggerModelSettings({ onSaved }: { onSaved: () =
         api_type: draft.apiType,
         base_url: draft.baseURL.trim(),
         model: draft.model.trim(),
-        api_key: draft.clearAPIKey ? '' : draft.apiKey.trim() || undefined,
+        api_key: draft.apiKey,
         timeout_seconds: timeoutSeconds,
       });
       setDraft(toDraft(saved));
@@ -130,7 +113,7 @@ export default function MessageTriggerModelSettings({ onSaved }: { onSaved: () =
             </div>
             <div className="space-y-2">
               <Field label={t('messageTriggerModel.baseURL')} hint={t('messageTriggerModel.baseURLHint')}>
-                <Input required inputMode="url" spellCheck={false} placeholder="https://api.example.com/v1" value={draft.baseURL} onChange={event => updateBaseURL(event.target.value)} />
+                <Input required inputMode="url" spellCheck={false} placeholder="https://api.example.com/v1" value={draft.baseURL} onChange={event => update('baseURL', event.target.value)} />
               </Field>
               {requestURL && (
                 <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
@@ -143,21 +126,9 @@ export default function MessageTriggerModelSettings({ onSaved }: { onSaved: () =
               <Field label={t('messageTriggerModel.model')}>
                 <Input required spellCheck={false} value={draft.model} onChange={event => update('model', event.target.value)} />
               </Field>
-              <div className="space-y-2">
-                <Field label={t('messageTriggerModel.apiKey')} hint={t('messageTriggerModel.apiKeyHint')}>
-                  <Input type="password" spellCheck={false} autoComplete="new-password" value={draft.apiKey} disabled={draft.clearAPIKey}
-                    onChange={event => update('apiKey', event.target.value)} />
-                </Field>
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  {t(draft.keyConfigured ? 'messageTriggerModel.keyConfigured' : 'messageTriggerModel.keyMissing')}
-                </p>
-                {draft.keyConfigured && (
-                  <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                    <input type="checkbox" checked={draft.clearAPIKey} onChange={event => update('clearAPIKey', event.target.checked)} className="accent-accent" />
-                    {t('messageTriggerModel.clearAPIKey')}
-                  </label>
-                )}
-              </div>
+              <Field label={t('messageTriggerModel.apiKey')}>
+                <Input spellCheck={false} autoComplete="off" value={draft.apiKey} onChange={event => update('apiKey', event.target.value)} />
+              </Field>
             </div>
           </fieldset>
           <Button type="submit" loading={saving} disabled={!valid}>{t(saving ? 'messageTriggerModel.testing' : 'messageTriggerModel.testAndSave')}</Button>

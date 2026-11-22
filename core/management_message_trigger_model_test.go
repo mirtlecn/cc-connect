@@ -25,6 +25,9 @@ func requestManagementMessageTriggerModel(t *testing.T, handler http.Handler, me
 	req.Header.Set("Authorization", "Bearer "+testMessageTriggerModelManagementToken)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("model settings can be cached")
+	}
 	var response mgmtResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode model settings response: %v", err)
@@ -32,7 +35,7 @@ func requestManagementMessageTriggerModel(t *testing.T, handler http.Handler, me
 	return recorder.Code, response
 }
 
-func assertManagementTriggerModelKeyStatus(t *testing.T, code int, response mgmtResponse, configured bool, secrets ...string) {
+func assertManagementTriggerModelKey(t *testing.T, code int, response mgmtResponse, want string, hidden ...string) {
 	t.Helper()
 	if code != http.StatusOK || !response.OK {
 		t.Fatalf("model settings returned HTTP %d", code)
@@ -41,16 +44,14 @@ func assertManagementTriggerModelKeyStatus(t *testing.T, code int, response mgmt
 	if err := json.Unmarshal(response.Data, &data); err != nil {
 		t.Fatal(err)
 	}
-	var got bool
-	if err := json.Unmarshal(data["key_configured"], &got); err != nil || got != configured {
-		t.Fatalf("key_configured = %v, %v, want %v", got, err, configured)
+	var got string
+	if err := json.Unmarshal(data["api_key"], &got); err != nil || got != want {
+		t.Fatal("model settings did not return the saved direct key")
 	}
-	for _, field := range []string{"api_key", "api_key_env"} {
-		if _, ok := data[field]; ok {
-			t.Errorf("model settings exposed %s", field)
-		}
+	if _, ok := data["api_key_env"]; ok {
+		t.Error("model settings exposed the key environment variable")
 	}
-	for _, secret := range secrets {
+	for _, secret := range hidden {
 		if bytes.Contains(response.Data, []byte(secret)) || strings.Contains(response.Error, secret) {
 			t.Fatal("model settings exposed a credential value")
 		}
@@ -111,19 +112,19 @@ func TestMgmtMessageTriggerModelDirectKeyLifecycle(t *testing.T) {
 	code, response := requestManagementMessageTriggerModel(t, handler, http.MethodPut, map[string]any{
 		"base_url": first.URL + "/v1", "model": "classifier-fixture", "api_key": firstKey,
 	})
-	assertManagementTriggerModelKeyStatus(t, code, response, true, firstKey)
+	assertManagementTriggerModelKey(t, code, response, firstKey)
 	assertManagementTriggerModelProbeAuth(t, firstAuth, "Bearer "+firstKey)
 	if stored.APIKey != firstKey || saves != 1 {
 		t.Fatal("successful probe did not persist the submitted direct key")
 	}
 
 	code, response = requestManagementMessageTriggerModel(t, handler, http.MethodGet, nil)
-	assertManagementTriggerModelKeyStatus(t, code, response, true, firstKey)
+	assertManagementTriggerModelKey(t, code, response, firstKey)
 
 	code, response = requestManagementMessageTriggerModel(t, handler, http.MethodPut, map[string]any{
 		"base_url": first.URL + "/v1/", "model": "classifier-fixture-v2",
 	})
-	assertManagementTriggerModelKeyStatus(t, code, response, true, firstKey)
+	assertManagementTriggerModelKey(t, code, response, firstKey)
 	assertManagementTriggerModelProbeAuth(t, firstAuth, "Bearer "+firstKey)
 	if stored.APIKey != firstKey || stored.Model != "classifier-fixture-v2" || saves != 2 {
 		t.Fatal("same base URL update discarded or changed the saved key")
@@ -159,14 +160,14 @@ func TestMgmtMessageTriggerModelDirectKeyLifecycle(t *testing.T) {
 	code, response = requestManagementMessageTriggerModel(t, handler, http.MethodPut, map[string]any{
 		"base_url": second.URL + "/v1", "model": "classifier-fixture",
 	})
-	assertManagementTriggerModelKeyStatus(t, code, response, false, firstKey, rejectedKey)
+	assertManagementTriggerModelKey(t, code, response, "", firstKey, rejectedKey)
 	assertManagementTriggerModelProbeAuth(t, secondAuth, "")
 	if stored.APIKey != "" || stored.APIKeyEnv != "" || stored.BaseURL != second.URL+"/v1" || saves != 3 {
 		t.Fatal("changing the base URL kept incompatible credentials in settings")
 	}
 
 	code, response = requestManagementMessageTriggerModel(t, handler, http.MethodGet, nil)
-	assertManagementTriggerModelKeyStatus(t, code, response, false, firstKey, rejectedKey)
+	assertManagementTriggerModelKey(t, code, response, "", firstKey, rejectedKey)
 }
 
 func TestMgmtMessageTriggerModelLegacyCredentialDoesNotLeaveBaseURL(t *testing.T) {
@@ -186,11 +187,11 @@ func TestMgmtMessageTriggerModelLegacyCredentialDoesNotLeaveBaseURL(t *testing.T
 	handler := server.buildHandler(http.NewServeMux())
 
 	code, response := requestManagementMessageTriggerModel(t, handler, http.MethodGet, nil)
-	assertManagementTriggerModelKeyStatus(t, code, response, true, envName, envValue)
+	assertManagementTriggerModelKey(t, code, response, "", envName, envValue)
 	code, response = requestManagementMessageTriggerModel(t, handler, http.MethodPut, map[string]any{
 		"base_url": first.URL + "/v1", "model": "classifier-fixture",
 	})
-	assertManagementTriggerModelKeyStatus(t, code, response, true, envName, envValue)
+	assertManagementTriggerModelKey(t, code, response, "", envName, envValue)
 	assertManagementTriggerModelProbeAuth(t, firstAuth, "Bearer "+envValue)
 	if stored.APIKeyEnv != envName {
 		t.Fatal("updating the original endpoint discarded the environment credential")
@@ -199,7 +200,7 @@ func TestMgmtMessageTriggerModelLegacyCredentialDoesNotLeaveBaseURL(t *testing.T
 	code, response = requestManagementMessageTriggerModel(t, handler, http.MethodPut, map[string]any{
 		"base_url": second.URL + "/v1", "model": "classifier-fixture",
 	})
-	assertManagementTriggerModelKeyStatus(t, code, response, false, envName, envValue)
+	assertManagementTriggerModelKey(t, code, response, "", envName, envValue)
 	assertManagementTriggerModelProbeAuth(t, secondAuth, "")
 	if stored.APIKeyEnv != "" || stored.APIKey != "" {
 		t.Fatal("changing endpoints retained the legacy credentials")
@@ -221,13 +222,38 @@ func TestMgmtMessageTriggerModelClearMissingLegacyCredential(t *testing.T) {
 	handler := server.buildHandler(http.NewServeMux())
 
 	code, response := requestManagementMessageTriggerModel(t, handler, http.MethodGet, nil)
-	assertManagementTriggerModelKeyStatus(t, code, response, true, envName)
+	assertManagementTriggerModelKey(t, code, response, "", envName)
 	code, response = requestManagementMessageTriggerModel(t, handler, http.MethodPut, map[string]any{
 		"base_url": stored.BaseURL, "model": stored.Model, "api_key": "",
 	})
-	assertManagementTriggerModelKeyStatus(t, code, response, false, envName)
+	assertManagementTriggerModelKey(t, code, response, "", envName)
 	assertManagementTriggerModelProbeAuth(t, auth, "")
 	if stored.APIKeyEnv != "" {
 		t.Fatal("the cleared environment key remained in the model settings")
+	}
+}
+
+func TestMgmtMessageTriggerModelKeyRequiresAuthorizedAccess(t *testing.T) {
+	const key = "saved-model-fixture-token"
+	for _, access := range []struct {
+		name, token string
+		status      int
+	}{
+		{"missing token", testMessageTriggerModelManagementToken, http.StatusUnauthorized},
+		{"remote without configured token", "", http.StatusForbidden},
+	} {
+		t.Run(access.name, func(t *testing.T) {
+			server := NewManagementServer(0, access.token, nil)
+			server.SetMessageTriggerModelAccess(func() (MessageTriggerModel, error) {
+				return MessageTriggerModel{APIKey: key}, nil
+			}, func(MessageTriggerModel) error { return nil })
+			handler := server.buildHandler(http.NewServeMux())
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/message-trigger-model", nil)
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, req)
+			if recorder.Code != access.status || bytes.Contains(recorder.Body.Bytes(), []byte(key)) {
+				t.Fatalf("unauthorized request returned HTTP %d, want %d without key", recorder.Code, access.status)
+			}
+		})
 	}
 }

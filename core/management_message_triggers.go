@@ -28,12 +28,12 @@ func (m *ManagementServer) SetMessageTriggerModelAccess(
 
 type messageTriggerModelResponse struct {
 	MessageTriggerModel
-	KeyConfigured bool `json:"key_configured"`
+	APIKey string `json:"api_key"`
 }
 
-func publicMessageTriggerModel(model MessageTriggerModel) messageTriggerModelResponse {
+func managementMessageTriggerModel(model MessageTriggerModel) messageTriggerModelResponse {
 	model.APIType = model.protocol()
-	return messageTriggerModelResponse{MessageTriggerModel: model, KeyConfigured: model.APIKey != "" || model.APIKeyEnv != ""}
+	return messageTriggerModelResponse{MessageTriggerModel: model, APIKey: model.APIKey}
 }
 
 func (m *ManagementServer) handleMessageTriggerModel(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +45,7 @@ func (m *ManagementServer) handleMessageTriggerModel(w http.ResponseWriter, r *h
 		mgmtError(w, http.StatusServiceUnavailable, "message trigger model configuration unavailable")
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	switch r.Method {
 	case http.MethodGet:
 		model, err := m.getMessageTriggerModel()
@@ -53,7 +54,7 @@ func (m *ManagementServer) handleMessageTriggerModel(w http.ResponseWriter, r *h
 			mgmtError(w, http.StatusInternalServerError, "message trigger model could not be read")
 			return
 		}
-		mgmtJSON(w, http.StatusOK, publicMessageTriggerModel(model))
+		mgmtJSON(w, http.StatusOK, managementMessageTriggerModel(model))
 	case http.MethodPut:
 		m.saveVerifiedMessageTriggerModel(w, r)
 	default:
@@ -109,7 +110,7 @@ func (m *ManagementServer) saveVerifiedMessageTriggerModel(w http.ResponseWriter
 		e.updateMessageTriggerModel(model)
 	}
 	m.mu.RUnlock()
-	mgmtJSON(w, http.StatusOK, publicMessageTriggerModel(model))
+	mgmtJSON(w, http.StatusOK, managementMessageTriggerModel(model))
 }
 
 type messageTriggerRulesRequest struct {

@@ -89,8 +89,8 @@ level = "info" # debug, info, warn, error
 # api_type = "chat_completions"    # Default / 默认. Use responses for /responses.
 # model = "your-model"
 # api_key = "your-api-key"         # Optional literal credential / 可选，直接填写密钥
-# Existing installations can still use api_key_env when api_key is empty.
-# 旧配置的 api_key_env 在未填写 api_key 时仍可使用。
+# Legacy api_key_env can be set manually in TOML and applies when api_key is empty.
+# 旧版 api_key_env 可在 TOML 中手工配置，在 api_key 为空时生效。
 # timeout_seconds = 10             # Default 10 seconds / 默认 10 秒
 
 # =============================================================================

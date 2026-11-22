@@ -38,7 +38,7 @@ export interface MessageTriggerModelSettings {
   base_url: string;
   model: string;
   timeout_seconds?: number;
-  key_configured: boolean;
+  api_key: string;
 }
 
 const triggerPath = (project: string) => `/projects/${encodeURIComponent(project)}/message-triggers`;
@@ -51,5 +51,5 @@ export const saveMessageTriggers = (project: string, rules: MessageTriggerRule[]
 
 export const getMessageTriggerModel = () => api.get<MessageTriggerModelSettings>('/message-trigger-model');
 
-export const saveMessageTriggerModel = (settings: Omit<MessageTriggerModelSettings, 'key_configured'> & { api_key?: string }) =>
+export const saveMessageTriggerModel = (settings: MessageTriggerModelSettings) =>
   api.put<MessageTriggerModelSettings>('/message-trigger-model', settings);

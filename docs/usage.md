@@ -1062,7 +1062,7 @@ timeout_seconds = 10
 
 `api_type = "chat_completions"` is the default and appends `/chat/completions` to `base_url`. Use `api_type = "responses"` for `/responses`. Enter `api_key` directly or leave it empty for an endpoint without authentication. The default timeout is 10 seconds.
 
-The Web dashboard shows whether a key is stored and masks it in the configuration preview. It never sends the old key to a different base URL. Provide a key for the new endpoint if it requires authentication, or clear the saved key to use an endpoint without authentication. Existing `api_key_env` values remain a fallback when `api_key` is empty. Web saves use file mode `0600` on Unix.
+For authorized users, the Web dashboard displays the saved `api_key` in plain text in the API key field. The test-and-save action tests the current settings and saves the field's value on success. Leave the field empty to clear the saved key. **Raw Config** masks the key. Legacy `api_key_env` settings are managed manually in TOML and still apply when `api_key` is empty. Web saves use file mode `0600` on Unix.
 
 The model receives `intent_prompt`, recent messages from the same session, and the original trigger message. By default, cc-connect requests native `json_schema` structured output on Chat Completions and Responses, including the official DeepSeek Responses API. For the official DeepSeek Chat Completions API, cc-connect requests `json_object` and validates the returned JSON against the same schema locally. [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) · [DeepSeek Responses](https://api-docs.deepseek.com/api/create-response/)
 
