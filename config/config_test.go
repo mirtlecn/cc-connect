@@ -3020,6 +3020,49 @@ func TestSaveProjectSettings_WorkspaceModeRequiresBaseDir(t *testing.T) {
 	}
 }
 
+func TestSaveProjectSettings_MultiWorkspaceIgnoresStaleWorkDir(t *testing.T) {
+	configPath := writeConfigFixture(t, feishuConfigFixture)
+	patchConfigPath(t, configPath)
+
+	multi, baseDir := "multi-workspace", t.TempDir()
+	if err := SaveProjectSettings("alpha", ProjectSettingsUpdate{
+		WorkspaceMode: &multi, WorkspaceBaseDir: &baseDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Older dashboards include the agent's default directory in every
+	// general settings update, even when the project is already in multi-workspace mode.
+	staleWorkDir, showContext := ".", true
+	if err := SaveProjectSettings("alpha", ProjectSettingsUpdate{
+		WorkDir: &staleWorkDir, ShowContextIndicator: &showContext,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("saved settings prevent restart: %v", err)
+	}
+	p := cfg.Projects[0]
+	if p.Mode != multi || p.BaseDir != baseDir || p.ShowContextIndicator == nil || !*p.ShowContextIndicator {
+		t.Fatal("saving general settings lost the workspace settings or display preference")
+	}
+
+	single, workDir := "single", t.TempDir()
+	if err := SaveProjectSettings("alpha", ProjectSettingsUpdate{
+		WorkspaceMode: &single, WorkDir: &workDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := cfg.Projects[0]; p.Mode != "" || p.Agent.Options["work_dir"] != workDir {
+		t.Fatal("switching back to single mode lost the requested working directory")
+	}
+}
+
 func TestGetProjectConfigDetails(t *testing.T) {
 	configPath := writeConfigFixture(t, feishuConfigFixture)
 	patchConfigPath(t, configPath)

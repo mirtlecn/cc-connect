@@ -2173,6 +2173,32 @@ func TestMgmt_ProjectPatch_RejectsMissingWorkDirBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestMgmt_ProjectPatch_MultiWorkspaceIgnoresChatWorkDir(t *testing.T) {
+	mgmt, ts, e := testManagementServer(t, "tok")
+	original := t.TempDir()
+	agent := &stubWorkDirAgent{workDir: original}
+	e.agent = agent
+	e.SetMultiWorkspace(original, filepath.Join(original, "bindings.json"))
+
+	var saved ProjectSettingsUpdate
+	mgmt.SetSaveProjectSettings(func(_ string, update ProjectSettingsUpdate) error {
+		saved = update
+		return nil
+	})
+	r := mgmtPatch(t, ts.URL+"/api/v1/projects/test-project", "tok", map[string]any{
+		"work_dir": ".", "show_context_indicator": true,
+	})
+	if !r.OK {
+		t.Fatalf("patch failed: %s", r.Error)
+	}
+	if saved.WorkDir != nil || saved.ShowContextIndicator == nil || !*saved.ShowContextIndicator {
+		t.Fatalf("unexpected saved settings: %+v", saved)
+	}
+	if got := agent.GetWorkDir(); got != original {
+		t.Fatalf("agent work_dir = %q, want %q", got, original)
+	}
+}
+
 func TestMgmt_ProjectPatch_DisabledCommands(t *testing.T) {
 	_, ts, e := testManagementServer(t, "tok")
 	r := mgmtPatch(t, ts.URL+"/api/v1/projects/test-project", "tok", map[string]any{

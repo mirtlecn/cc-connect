@@ -791,12 +791,24 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 			return
 		}
 		if body.WorkDir != nil {
-			workDir, err := validateProjectWorkDir(*body.WorkDir)
-			if err != nil {
-				mgmtError(w, http.StatusBadRequest, err.Error())
-				return
+			multiWorkspace := e.multiWorkspace
+			if body.WorkspaceMode != nil {
+				multiWorkspace = strings.TrimSpace(*body.WorkspaceMode) == "multi-workspace"
+			} else if m.getProjectConfig != nil {
+				if cfg := m.getProjectConfig(name); cfg != nil {
+					multiWorkspace = cfg["workspace_mode"] == "multi-workspace"
+				}
 			}
-			*body.WorkDir = workDir
+			if multiWorkspace {
+				body.WorkDir = nil
+			} else {
+				workDir, err := validateProjectWorkDir(*body.WorkDir)
+				if err != nil {
+					mgmtError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+				*body.WorkDir = workDir
+			}
 		}
 		if body.WorkspaceBaseDir != nil {
 			baseDir, err := validateProjectWorkDir(*body.WorkspaceBaseDir)
@@ -850,7 +862,7 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 		if body.DisabledCommands != nil {
 			e.SetDisabledCommands(body.DisabledCommands)
 		}
-		if body.WorkDir != nil {
+		if body.WorkDir != nil && !e.multiWorkspace {
 			if switcher, ok := e.agent.(WorkDirSwitcher); ok {
 				switcher.SetWorkDir(*body.WorkDir)
 			}

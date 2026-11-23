@@ -407,6 +407,33 @@ func TestMessageTriggerSenderWithoutChatAccessDoesNotEnterWorkspaceSetup(t *test
 	}
 }
 
+func TestMessageTriggerSenderWithoutChatAccessDoesNotEmitMessageReceivedHook(t *testing.T) {
+	rec, srv := newHookRecorderServer(t)
+	p := newMessageTriggerTestPlatform()
+	e := NewEngine("trigger-hook-project", &stubAgent{}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	e.SetHooks(NewHookManager(e.name, []HookConfig{{
+		Event: string(HookEventMessageReceived), Type: "http", URL: srv.URL, Async: boolPtr(false),
+	}}, "sh", "-c", ""))
+	e.SetMultiWorkspace(t.TempDir(), filepath.Join(t.TempDir(), "bindings.json"))
+	e.SetMessageTriggers([]MessageTriggerRule{{
+		Name: "agent task", Enabled: true, Platform: p.Name(), Action: "agent",
+		Groups: []MessageTriggerGroup{{Conditions: []MessageTriggerCondition{{Type: "regex", Value: "^run task$"}}}},
+	}}, MessageTriggerModel{})
+
+	msg := messageTriggerTestMessage(p, "trigger-only", "run task", false)
+	msg.Trigger.ChatAccessDenied = true
+	e.ReceiveMessage(p, msg)
+	if _, ok := rec.find(HookEventMessageReceived); ok {
+		t.Fatal("matching a rule also exposed the message to the ordinary chat hook")
+	}
+
+	e.ReceiveMessage(p, messageTriggerTestMessage(p, "chat-allowed", "run task", true))
+	if _, ok := rec.find(HookEventMessageReceived); !ok {
+		t.Fatal("the message-received hook did not receive the allowed chat message")
+	}
+}
+
 func TestMessageTriggerShellDoesNotRunWithoutMatchedCapture(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture uses POSIX printf")

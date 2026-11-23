@@ -406,6 +406,8 @@ Returns detailed information for a single project.
 
 #### PATCH /api/v1/projects/{name}
 
+For a multi-workspace project, workspace bindings determine the working directory. Project settings updates ignore `work_dir` in that mode.
+
 Updates project settings. Only provided fields are updated.
 
 **Request body:**

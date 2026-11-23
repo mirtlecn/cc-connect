@@ -3081,7 +3081,8 @@ func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *Messag
 		)
 	}
 
-	if !msg.triggerConfirmed {
+	// A rule can admit a sender without granting access to ordinary chat hooks.
+	if !msg.triggerConfirmed && (msg.Trigger == nil || !msg.Trigger.ChatAccessDenied) {
 		e.hooks.Emit(HookEvent{
 			Event:      HookEventMessageReceived,
 			SessionKey: msg.SessionKey,
