@@ -120,10 +120,11 @@ function ConditionEditor({ condition, platform, scopeTaken, onChange, onRemove }
   const { type, text, scope, start, end } = condition;
   const visibleTypes = conditionTypes.filter(option => option !== 'group' || type === 'group');
   const sameTime = start !== '' && start === end;
+  const dingTalkIDsHint = platform === 'dingtalk' ? t('messageTriggers.dingTalkUserIDsHint') : undefined;
   const hints = {
     group: t('messageTriggers.groupsHint'),
-    sender: t('messageTriggers.sendersHint'),
-    mentioned: t(platform === 'telegram' ? 'messageTriggers.mentionsTelegramHint' : 'messageTriggers.mentionsHint'),
+    sender: dingTalkIDsHint ?? t('messageTriggers.sendersHint'),
+    mentioned: dingTalkIDsHint ?? t(platform === 'telegram' ? 'messageTriggers.mentionsTelegramHint' : 'messageTriggers.mentionsHint'),
     regex: t('messageTriggers.regexHint'),
   };
 

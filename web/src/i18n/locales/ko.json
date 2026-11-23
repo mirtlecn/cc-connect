@@ -81,7 +81,9 @@
   "messageTriggers": {
     "order": "목록 아래에서 위로 규칙을 확인하고 처음 일치한 규칙을 실행합니다.",
     "empty": "메시지 트리거 규칙이 없습니다.",
-    "noPlatforms": "먼저 이 프로젝트에 Feishu, Lark 또는 Telegram을 설정하세요.",
+    "noPlatforms": "먼저 이 프로젝트에 Feishu, Lark, Telegram 또는 DingTalk을 설정하세요.",
+    "dingTalkModeHint": "DingTalk에서는 개인 메시지와 봇을 @멘션한 그룹 메시지에 직접 실행 규칙을 적용할 수 있습니다.",
+    "dingTalkUserIDsHint": "한 줄에 DingTalk 사용자 ID(staffId 또는 dingtalkId) 하나를 입력하세요. 어느 한 줄이라도 일치하면 됩니다.",
     "add": "규칙 추가",
     "edit": "규칙 편집",
     "enable": "활성화",
@@ -155,6 +157,7 @@
     "ccInvalidIDs": "참조 사용자 ID가 이 플랫폼의 형식에 맞는지 확인하세요.",
     "ccCount": "참조 {{total}}명",
     "platforms": {
+      "dingtalk": "DingTalk",
       "feishu": "Feishu",
       "lark": "Lark",
       "telegram": "Telegram"

@@ -25,8 +25,21 @@ func (p ProjectConfig) normalizeMessageTriggers(rules []core.MessageTriggerRule,
 	var platforms []string
 	for _, platform := range p.Platforms {
 		switch platform.Type {
-		case "feishu", "lark", "telegram":
+		case "feishu", "lark", "telegram", "dingtalk":
 			platforms = append(platforms, platform.Type)
+		}
+	}
+	for i, rule := range rules {
+		if !strings.EqualFold(strings.TrimSpace(rule.Platform), "dingtalk") {
+			continue
+		}
+		// Check explicit modes before core asks for an intent model.
+		switch strings.ToLower(strings.TrimSpace(rule.TriggerMode)) {
+		case "manual", "intent":
+			return nil, fmt.Errorf("message trigger rule %d: DingTalk only supports direct trigger mode", i+1)
+		}
+		if rule.CCEnabled {
+			return nil, fmt.Errorf("message trigger rule %d: DingTalk does not support completion CC", i+1)
 		}
 	}
 	normalized, err := core.NormalizeMessageTriggerRules(rules, platforms, model)
@@ -34,6 +47,15 @@ func (p ProjectConfig) normalizeMessageTriggers(rules []core.MessageTriggerRule,
 		return nil, err
 	}
 	for i, rule := range normalized {
+		if rule.Platform == "dingtalk" {
+			// Normalization can also infer a review mode from a legacy rule.
+			if rule.TriggerMode != "direct" {
+				return nil, fmt.Errorf("message trigger rule %d: DingTalk only supports direct trigger mode", i+1)
+			}
+			if len(rule.CCUserIDs) > 0 {
+				return nil, fmt.Errorf("message trigger rule %d: DingTalk does not support completion CC", i+1)
+			}
+		}
 		for _, userID := range rule.CCUserIDs {
 			if !validMessageTriggerUserID(rule.Platform, userID) {
 				return nil, fmt.Errorf("message trigger rule %d: cc_user_ids must contain %s user IDs", i+1, rule.Platform)

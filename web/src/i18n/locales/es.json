@@ -81,7 +81,9 @@
   "messageTriggers": {
     "order": "Las reglas se evalúan de abajo hacia arriba. Se ejecuta la primera que coincida.",
     "empty": "Aún no hay reglas de mensajes.",
-    "noPlatforms": "Primero configura Feishu, Lark o Telegram en este proyecto.",
+    "noPlatforms": "Primero configura Feishu, Lark, Telegram o DingTalk en este proyecto.",
+    "dingTalkModeHint": "DingTalk admite reglas directas para mensajes privados y mensajes de grupo que mencionan al bot.",
+    "dingTalkUserIDsHint": "Escribe un ID de usuario de DingTalk (staffId o dingtalkId) por línea. Basta con que coincida una línea.",
     "add": "Añadir regla",
     "edit": "Editar regla",
     "enable": "Activar",
@@ -155,6 +157,7 @@
     "ccInvalidIDs": "Comprueba el formato de los ID de usuario en copia para esta plataforma.",
     "ccCount": "En copia ({{total}})",
     "platforms": {
+      "dingtalk": "DingTalk",
       "feishu": "Feishu",
       "lark": "Lark",
       "telegram": "Telegram"

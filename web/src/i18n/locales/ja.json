@@ -81,7 +81,9 @@
   "messageTriggers": {
     "order": "ルールを下から順に照合し、最初に一致したルールを実行します。",
     "empty": "トリガールールはありません。",
-    "noPlatforms": "先にこのプロジェクトに Feishu、Lark、または Telegram を設定してください。",
+    "noPlatforms": "先にこのプロジェクトに Feishu、Lark、Telegram、または DingTalk を設定してください。",
+    "dingTalkModeHint": "DingTalk では、個人チャットとボットを @メンションしたグループメッセージで直接実行できます。",
+    "dingTalkUserIDsHint": "1 行に 1 個の DingTalk ユーザー ID（staffId または dingtalkId）を入力してください。いずれか 1 行に一致すれば条件を満たします。",
     "add": "ルールを追加",
     "edit": "ルールを編集",
     "enable": "有効にする",
@@ -155,6 +157,7 @@
     "ccInvalidIDs": "CC 先のユーザー ID がこのプラットフォームの形式に合っているか確認してください。",
     "ccCount": "CC {{total}} 人",
     "platforms": {
+      "dingtalk": "DingTalk",
       "feishu": "Feishu",
       "lark": "Lark",
       "telegram": "Telegram"

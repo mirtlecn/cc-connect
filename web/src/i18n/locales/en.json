@@ -81,7 +81,9 @@
   "messageTriggers": {
     "order": "Rules run from bottom to top. The first matching rule runs.",
     "empty": "No message triggers yet.",
-    "noPlatforms": "Add a Feishu, Lark, or Telegram platform to this project first.",
+    "noPlatforms": "Add a Feishu, Lark, Telegram, or DingTalk platform to this project first.",
+    "dingTalkModeHint": "DingTalk supports direct rules for private messages and group messages that @mention the bot.",
+    "dingTalkUserIDsHint": "Enter one DingTalk user ID (staffId or dingtalkId) per line. A match on any line is enough.",
     "add": "Add rule",
     "edit": "Edit rule",
     "enable": "Enable",
@@ -155,6 +157,7 @@
     "ccInvalidIDs": "Check the CC user ID format for this platform.",
     "ccCount": "CC ({{total}})",
     "platforms": {
+      "dingtalk": "DingTalk",
       "feishu": "Feishu",
       "lark": "Lark",
       "telegram": "Telegram"

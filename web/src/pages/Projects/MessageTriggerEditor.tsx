@@ -6,7 +6,7 @@ import type { MessageTriggerMode, MessageTriggerRule } from '@/api/messageTrigge
 import MessageTriggerConditionGroups, { createGroupDrafts, serializeGroups } from './MessageTriggerConditionGroups';
 import { idListClassName, parseLines } from './MessageTriggerFields';
 
-export const triggerPlatforms = ['feishu', 'lark', 'telegram'] as const;
+export const triggerPlatforms = ['feishu', 'lark', 'telegram', 'dingtalk'] as const;
 type TriggerPlatform = typeof triggerPlatforms[number];
 
 export const triggerModeLabels: Record<MessageTriggerMode, string> = {
@@ -59,13 +59,19 @@ export default function MessageTriggerEditor({ rule, platforms, saving, conflict
   }
 
   const groups = serializeGroups(draft.groups);
-  const ccIDs = parseLines(draft.ccUserIDs);
+  const isDingTalk = draft.platform === 'dingtalk';
+  const ccEnabled = !isDingTalk && draft.ccEnabled;
+  const ccIDs = isDingTalk ? [] : parseLines(draft.ccUserIDs);
   const invalidCcIDs = ccIDs.some(id => !isValidCcUserID(draft.platform, id));
   const platformAvailable = platforms.some(platform => platform === draft.platform);
+  const modeAvailable = !isDingTalk || draft.triggerMode === 'direct';
   const intentPrompt = draft.intentPrompt.trim();
-  const valid = draft.name.trim() && platformAvailable && groups !== null
+  const valid = draft.name.trim() && platformAvailable && modeAvailable && groups !== null
     && (draft.triggerMode !== 'intent' || intentPrompt !== '')
-    && (draft.action === 'agent' || draft.command.trim()) && !invalidCcIDs && (!draft.ccEnabled || ccIDs.length > 0);
+    && (draft.action === 'agent' || draft.command.trim()) && !invalidCcIDs && (!ccEnabled || ccIDs.length > 0);
+  const modeHint = isDingTalk
+    ? t('messageTriggers.dingTalkModeHint')
+    : draft.triggerMode === 'intent' ? undefined : t(`messageTriggers.${draft.triggerMode}ModeHint`);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -79,7 +85,7 @@ export default function MessageTriggerEditor({ rule, platforms, saving, conflict
       action: draft.action,
       trigger_mode: draft.triggerMode,
       intent_prompt: draft.triggerMode === 'intent' ? intentPrompt : undefined,
-      cc_enabled: draft.ccEnabled,
+      cc_enabled: ccEnabled,
       cc_user_ids: ccIDs,
       prompt: draft.action === 'agent' ? draft.prompt : '',
       command: draft.action === 'shell' ? draft.command : '',
@@ -105,14 +111,14 @@ export default function MessageTriggerEditor({ rule, platforms, saving, conflict
             onGroupsChange={groups => update('groups', groups)}
             onGroupMatchChange={match => update('groupMatch', match)} />
           <div className="space-y-3 border-t border-gray-200 pt-4 dark:border-white/10">
-            <Field label={t('messageTriggers.triggerMode')} hint={draft.triggerMode === 'intent' ? undefined : t(`messageTriggers.${draft.triggerMode}ModeHint`)}>
+            <Field label={t('messageTriggers.triggerMode')} hint={modeHint}>
               <select className={selectClassName} value={draft.triggerMode} onChange={event => update('triggerMode', event.target.value as MessageTriggerMode)}>
                 {(Object.keys(triggerModeLabels) as MessageTriggerMode[]).map(mode => (
-                  <option key={mode} value={mode}>{t(triggerModeLabels[mode])}</option>
+                  <option key={mode} value={mode} disabled={isDingTalk && mode !== 'direct'}>{t(triggerModeLabels[mode])}</option>
                 ))}
               </select>
             </Field>
-            {draft.triggerMode === 'intent' && (
+            {!isDingTalk && draft.triggerMode === 'intent' && (
               <>
                 <Field label={t('messageTriggers.intent')} hint={t('messageTriggers.intentHint')}>
                   <Textarea required rows={3} value={draft.intentPrompt} onChange={event => update('intentPrompt', event.target.value)} />
@@ -139,21 +145,25 @@ export default function MessageTriggerEditor({ rule, platforms, saving, conflict
                 <Textarea required rows={3} className="font-mono" placeholder="pwd" value={draft.command} onChange={event => update('command', event.target.value)} />
               </Field>
             )}
-            <div className="space-y-1">
-              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                <input type="checkbox" checked={draft.ccEnabled} onChange={event => update('ccEnabled', event.target.checked)}
-                  aria-describedby={ccHintId} className="accent-accent" />
-                {t('messageTriggers.ccEnabled')}
-              </label>
-              <p id={ccHintId} className="pl-5 text-xs text-gray-500 dark:text-gray-400">
-                {t('messageTriggers.ccHint')}
-              </p>
-            </div>
-            <Field label={t('messageTriggers.ccUserIDs')} hint={t(draft.platform === 'telegram' ? 'messageTriggers.ccTelegramIDs' : 'messageTriggers.ccFeishuIDs')}>
-              <Textarea required={draft.ccEnabled} rows={2} wrap="off" className={idListClassName} value={draft.ccUserIDs}
-                aria-invalid={invalidCcIDs || undefined} onChange={event => update('ccUserIDs', event.target.value)} />
-            </Field>
-            {invalidCcIDs && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{t('messageTriggers.ccInvalidIDs')}</p>}
+            {!isDingTalk && (
+              <>
+                <div className="space-y-1">
+                  <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                    <input type="checkbox" checked={draft.ccEnabled} onChange={event => update('ccEnabled', event.target.checked)}
+                      aria-describedby={ccHintId} className="accent-accent" />
+                    {t('messageTriggers.ccEnabled')}
+                  </label>
+                  <p id={ccHintId} className="pl-5 text-xs text-gray-500 dark:text-gray-400">
+                    {t('messageTriggers.ccHint')}
+                  </p>
+                </div>
+                <Field label={t('messageTriggers.ccUserIDs')} hint={t(draft.platform === 'telegram' ? 'messageTriggers.ccTelegramIDs' : 'messageTriggers.ccFeishuIDs')}>
+                  <Textarea required={draft.ccEnabled} rows={2} wrap="off" className={idListClassName} value={draft.ccUserIDs}
+                    aria-invalid={invalidCcIDs || undefined} onChange={event => update('ccUserIDs', event.target.value)} />
+                </Field>
+                {invalidCcIDs && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{t('messageTriggers.ccInvalidIDs')}</p>}
+              </>
+            )}
           </div>
           <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
             <input type="checkbox" checked={draft.enabled} onChange={event => update('enabled', event.target.checked)} className="accent-accent" />

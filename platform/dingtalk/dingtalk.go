@@ -82,6 +82,7 @@ type Platform struct {
 	streamCtxCancel       context.CancelFunc
 	handler               core.MessageHandler
 	dedup                 core.MessageDedup
+	messageTriggerScope   messageTriggerScope
 	httpClient            *http.Client
 	tokenMu               sync.Mutex
 	accessToken           string
@@ -393,6 +394,7 @@ func (p *Platform) onMessage(data *chatbot.BotCallbackDataModel, richText *richT
 		Content:    messageContent,
 		MessageID:  data.MsgId,
 		ChannelKey: data.ConversationId,
+		Trigger:    p.triggerEvent(data),
 		ReplyCtx: replyContext{
 			sessionWebhook:            data.SessionWebhook,
 			sessionWebhookExpiredTime: data.SessionWebhookExpiredTime,

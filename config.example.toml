@@ -1100,10 +1100,14 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # Message Triggers / 消息触发任务
 # Group rules require im:message.group_msg on Feishu/Lark and ordinary group messages on Telegram.
 # 匹配群聊时，飞书/Lark 需发布 im:message.group_msg 权限，Telegram 机器人需能接收普通群消息。
+# DingTalk supports direct Agent/Shell rules for private text and group text that mentions the bot, subject to allow_from.
+# 钉钉支持私聊与群内 @ 机器人的文本直接触发 Agent/Shell，匹配前先检查 allow_from。
 # Rules match ordinary group and private messages from bottom to top, including direct bot mentions.
 # 群聊和私聊的普通消息按规则从下往上匹配，包括直接 @ 机器人的消息。
-# Use sender conditions for rule access. allow_from controls ordinary chat and commands; admin_from controls rule confirmations.
-# 用 sender 条件限制规则发件人。allow_from 管理普通对话和命令权限，admin_from 管理规则确认权限。
+# Use sender conditions for rule access. For Feishu/Lark and Telegram, allow_from controls ordinary chat and commands.
+# 用 sender 条件限制规则发件人。飞书/Lark 和 Telegram 的 allow_from 管理普通对话和命令权限。
+# admin_from controls rule confirmations on platforms that support them.
+# 支持规则确认的渠道使用 admin_from 管理确认权限。
 # Each condition group can have one chat_scope. It applies before the group's AND/OR conditions.
 # 每个条件组最多一个 chat_scope，先判断会话范围，再按组内的 AND/OR 判断其余条件。
 # Without chat_scope or legacy group conditions, the rule covers group and private chats.
@@ -1111,7 +1115,7 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # [[projects.message_triggers]]
 # name = "Triage an incident"
 # enabled = false
-# platform = "feishu"             # feishu | lark | telegram, configured in this project / 项目已配置的渠道
+# platform = "feishu"             # feishu | lark | telegram | dingtalk, configured in this project / 项目已配置的渠道
 # group_match = "or"              # and | or, default or across groups / 组间默认 or
 # trigger_mode = "direct"         # direct | manual | intent / 直接执行、人工确认、意图判断
 # intent_prompt = ""              # Required in intent mode / 意图判断模式必填

@@ -237,6 +237,35 @@ level=INFO msg="cc-connect is running" projects=1
 2. 点击群设置 → 「群机器人」
 3. 添加你创建的机器人
 
+## 消息触发任务
+
+在 **项目 → 对应项目 → 触发任务** 中为已配置的钉钉渠道添加规则。钉钉的 Stream 机器人在私聊或群内被 @ 时收到文本回调。规则在钉钉渠道的 `allow_from` 检查通过后匹配，执行结果发回来源会话。[钉钉接收消息文档](https://dingtalk.apifox.cn/doc-3559835)
+
+钉钉规则当前支持直接执行 Agent 或 Shell。人工确认、意图判断和完成抄送仍由支持这些能力的渠道提供。
+
+以下规则在私聊收到完整的“回声测试”时执行本地 Shell 命令。
+
+```toml
+[[projects.message_triggers]]
+name = "钉钉回声测试"
+enabled = true
+platform = "dingtalk"
+trigger_mode = "direct"
+action = "shell"
+command = "echo trigger-ok"
+
+[[projects.message_triggers.groups]]
+match = "and"
+
+[[projects.message_triggers.groups.conditions]]
+type = "chat_scope"
+value = "private"
+
+[[projects.message_triggers.groups.conditions]]
+type = "regex"
+value = '^回声测试$'
+```
+
 ---
 
 ## 使用示例

@@ -81,7 +81,9 @@
   "messageTriggers": {
     "order": "Правила проверяются снизу вверх. Выполняется первое подходящее правило.",
     "empty": "Правил для сообщений пока нет.",
-    "noPlatforms": "Сначала настройте Feishu, Lark или Telegram в этом проекте.",
+    "noPlatforms": "Сначала настройте Feishu, Lark, Telegram или DingTalk в этом проекте.",
+    "dingTalkModeHint": "DingTalk поддерживает прямой запуск по личным сообщениям и сообщениям группы с @упоминанием бота.",
+    "dingTalkUserIDsHint": "Укажите один ID пользователя DingTalk (staffId или dingtalkId) на строку. Достаточно совпадения с любой строкой.",
     "add": "Добавить правило",
     "edit": "Изменить правило",
     "enable": "Включить",
@@ -155,6 +157,7 @@
     "ccInvalidIDs": "Проверьте формат ID пользователей для копии на этой платформе.",
     "ccCount": "Копия ({{total}})",
     "platforms": {
+      "dingtalk": "DingTalk",
       "feishu": "Feishu",
       "lark": "Lark",
       "telegram": "Telegram"

@@ -965,12 +965,13 @@ Claude Code auto-creates the cron job. For other agents that rely on memory file
 
 ## Message Triggers
 
-Message triggers run a project action when a message in a group or private chat matches a rule. Open **Projects → your project → Message triggers** in the Web dashboard, or add `[[projects.message_triggers]]` entries under the existing project in `config.toml`. If Feishu and Telegram are configured in separate projects, open each project separately to manage its rules.
+Message triggers run a project action when a message in a group or private chat matches a rule. Open **Projects → your project → Message triggers** in the Web dashboard, or add `[[projects.message_triggers]]` entries under the existing project in `config.toml`. Manage each project's rules separately.
 
-The rule's platform must already be configured for the project. For group-chat rules, the bot must receive ordinary messages in the selected groups.
+The rule's platform must already be configured for the project. The bot can only match messages that its platform delivers.
 
 - **Feishu or Lark** requires a subscription to the `im.message.receive_v1` event. For group-chat rules, publish the `im:message.group_msg` permission. For confirmation buttons, subscribe to `card.action.trigger` as well. [Feishu setup](./feishu.md)
 - **Telegram** delivers ordinary group messages to bot administrators or to bots with Group Privacy disabled. Re-add the bot to the group after changing its privacy setting. [Telegram Privacy Mode](https://core.telegram.org/bots/features#privacy-mode)
+- **DingTalk** supports direct Agent and Shell rules for text callbacks in private chats and group messages that mention the bot. Set `platform = "dingtalk"` and `trigger_mode = "direct"`. [DingTalk setup](./dingtalk.md#消息触发任务)
 
 ### Rule order and matching
 
@@ -989,7 +990,7 @@ In multi-workspace mode, Agent actions use the conversation's workspace and requ
 
 Existing flat rules still load. Group and identity requirements become grouped conditions, and keywords become case-insensitive literal regular expressions. Legacy confirmation settings migrate to manual mode. Legacy intent conditions migrate to intent mode, with manual mode taking precedence when both were used. Saving writes the new rule structure.
 
-Ordinary messages in group and private chats, including direct mentions of the bot, are checked against trigger rules from the bottom of the list upward. Use a `sender` condition in a rule group to restrict senders. The platform's `allow_from` controls access to ordinary conversation and commands. When no rule matches, messages from users outside that list cannot fall back to ordinary conversation.
+Ordinary messages in group and private chats, including direct mentions of the bot, are checked against trigger rules from the bottom of the list upward. Use a `sender` condition in a rule group to restrict senders. For Feishu, Lark, and Telegram, `allow_from` controls ordinary conversation and commands, and a rule can independently admit a sender. DingTalk applies `allow_from` before evaluating rules.
 
 With `group_chat_history_share` enabled, Feishu and Lark retain and send up to 10 pending context messages per group or thread by default. Set the platform option `group_chat_history_limit` to a positive integer to change both limits. Omit it or use `0` to use 10. The three most recent messages with images can contribute up to six images in total. Older images, images beyond the limit, and failed downloads appear as `[image]`. [Feishu group context settings](./feishu.md)
 
@@ -1091,8 +1092,8 @@ The response must be a JSON object containing only `decision` and `reason`. The 
 
 ### Actions, confirmation, and CC
 
-- `action = "agent"` uses the project's existing Agent session, queue, and reply display settings. Set `prompt` to prepend instructions. The final reply quotes the original message and mentions its sender in group chats.
-- `action = "shell"` runs `command` on the machine running cc-connect, in the project's resolved working directory. It uses the configured shell, has a 60-second timeout, and replies to the original message with standard output and standard error (stdout and stderr).
+- `action = "agent"` uses the project's existing Agent session, queue, and reply display settings. Set `prompt` to prepend instructions. On Feishu, Lark, and Telegram, the final reply quotes the original message and mentions its sender in group chats. On DingTalk, it goes to the originating conversation.
+- `action = "shell"` runs `command` on the machine running cc-connect, in the project's resolved working directory. It uses the configured shell, has a 60-second timeout, and sends standard output and standard error (stdout and stderr) to the originating conversation.
 - Manual mode and a model decision of `confirm` require an administrator listed in the project's `admin_from` to choose **Yes / No**. In groups, the prompt quotes the original message and includes a `cc` line mentioning those administrators. In private chats, the prompt is available to the sender when they are a listed administrator. Other senders receive a notice about the administrator requirement. Administrators with ordinary command access can use `/whoami` to find their platform IDs. Use Feishu or Lark OpenIDs (`ou_…`) or positive Telegram user IDs. The wildcard `*` cannot identify an administrator to mention. A request expires after five minutes, when the project's rules are reloaded or edited, or when the process restarts.
 - `cc_enabled = true` adds a `cc` line with native mentions for `cc_user_ids` to the final reply. Enter at least one platform user ID when enabled. Turning it off keeps the IDs for later use. The confirmation prompt gets its recipients from `admin_from` independently.
 

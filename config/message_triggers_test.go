@@ -480,6 +480,7 @@ func TestMessageTriggerConfigRejectsInvalidRules(t *testing.T) {
 		{"requires a condition group", "alpha", "lark", nil, "condition group"},
 		{"channel enabled in another project", "beta", "lark", triggerTestGroup(core.MessageTriggerCondition{Type: "group", Values: []string{"oc_alpha"}}), "channel configured for this project"},
 		{"channel does not support triggers", "beta", "slack", triggerTestGroup(core.MessageTriggerCondition{Type: "group", Values: []string{"C123"}}), "channel configured for this project"},
+		{"DingTalk channel not configured", "beta", "dingtalk", triggerTestGroup(core.MessageTriggerCondition{Type: "regex", Value: "^ping$"}), "channel configured for this project"},
 		{"requires a condition in the group", "alpha", "lark", triggerTestGroup(), "condition"},
 		{"rejects unsupported expressions", "alpha", "lark", triggerTestGroup(
 			core.MessageTriggerCondition{Type: "group", Values: []string{"oc_alpha"}},
@@ -577,6 +578,87 @@ platforms = [{ type = "feishu" }, { type = "lark" }, { type = "telegram" }]
 			}
 			if _, err := Load(ConfigPath); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("loading invalid rule = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+const dingTalkMessageTriggerConfig = `
+[[projects]]
+name = "demo"
+agent = { type = "codex" }
+platforms = [{ type = "dingtalk" }]
+`
+
+func TestMessageTriggerConfigSavesDingTalkDirectRules(t *testing.T) {
+	writeTestConfig(t, dingTalkMessageTriggerConfig)
+	rules := []core.MessageTriggerRule{
+		{
+			Name: "Private note", Enabled: true, Platform: " DingTalk ", Action: "agent",
+			Groups: triggerTestGroup(
+				core.MessageTriggerCondition{Type: "chat_scope", Value: "private"},
+				core.MessageTriggerCondition{Type: "sender", Values: []string{"staff-private"}},
+				core.MessageTriggerCondition{Type: "regex", Value: "^note:"},
+			),
+		},
+		{
+			Name: "Group ping", Enabled: true, Platform: "dingtalk", Action: "shell",
+			TriggerMode: "direct", Command: "echo ping",
+			Groups: triggerTestGroup(
+				core.MessageTriggerCondition{Type: "chat_scope", Value: "group", Values: []string{"cidExample="}},
+				core.MessageTriggerCondition{Type: "mentioned", Values: []string{"ding-user"}},
+				core.MessageTriggerCondition{Type: "time_range", Start: "09:00", End: "17:30"},
+			),
+		},
+	}
+	saved, _, err := SaveProjectMessageTriggers("demo", core.MessageTriggerRulesRevision(nil), rules)
+	if err != nil {
+		t.Fatalf("save DingTalk rules: %v", err)
+	}
+	loaded, _ := getMessageTriggerRules(t, "demo")
+	if !reflect.DeepEqual(saved, loaded) || len(loaded) != len(rules) {
+		t.Fatalf("loaded rules = %#v, saved = %#v", loaded, saved)
+	}
+	for i, rule := range loaded {
+		if rule.Platform != "dingtalk" || rule.TriggerMode != "direct" || rule.Action != rules[i].Action {
+			t.Fatalf("unexpected DingTalk rule after reloading: %#v", rule)
+		}
+	}
+}
+
+func TestMessageTriggerConfigRejectsUnsupportedDingTalkRuleOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rule    core.MessageTriggerRule
+		wantErr string
+	}{
+		{"manual confirmation", core.MessageTriggerRule{TriggerMode: "manual"}, "DingTalk only supports direct"},
+		{"legacy confirmation", core.MessageTriggerRule{Confirm: true}, "DingTalk only supports direct"},
+		{"legacy intent", core.MessageTriggerRule{IntentPrompt: "Check the incident"}, "DingTalk only supports direct"},
+		{"intent without a model", core.MessageTriggerRule{Enabled: true, TriggerMode: "intent", IntentPrompt: "Check the incident"}, "DingTalk only supports direct"},
+		{"CC enabled", core.MessageTriggerRule{CCEnabled: true}, "DingTalk does not support completion CC"},
+		{"CC recipients saved while disabled", core.MessageTriggerRule{CCUserIDs: []string{"staff-copy"}}, "DingTalk does not support completion CC"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeTestConfig(t, dingTalkMessageTriggerConfig)
+			rule := tc.rule
+			rule.Name, rule.Platform, rule.Action = "Unsupported", "dingtalk", "agent"
+			rule.Groups = triggerTestGroup(core.MessageTriggerCondition{Type: "regex", Value: "^test$"})
+			rules := []core.MessageTriggerRule{rule}
+			_, _, err := SaveProjectMessageTriggers("demo", core.MessageTriggerRulesRevision(nil), rules)
+			if !errors.Is(err, core.ErrInvalidMessageTriggerRules) || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("save unsupported DingTalk rule = %v, want %q", err, tc.wantErr)
+			}
+			if string(readMessageTriggerConfig(t)) != dingTalkMessageTriggerConfig {
+				t.Fatal("unsupported rule changed the config file")
+			}
+			lines, ok := messageTriggerRuleBlock(rules)
+			if !ok {
+				t.Fatal("encode rule")
+			}
+			writeTestConfig(t, dingTalkMessageTriggerConfig+strings.Join(lines, "\n")+"\n")
+			if _, err := Load(ConfigPath); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("load unsupported DingTalk rule = %v, want %q", err, tc.wantErr)
 			}
 		})
 	}

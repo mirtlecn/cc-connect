@@ -81,7 +81,9 @@
   "messageTriggers": {
     "order": "规则按列表从下往上匹配，只执行第一条命中的规则。",
     "empty": "暂无触发规则。",
-    "noPlatforms": "请先在本项目中配置飞书、Lark 或 Telegram 渠道。",
+    "noPlatforms": "请先在本项目中配置飞书、Lark、Telegram 或钉钉渠道。",
+    "dingTalkModeHint": "钉钉支持直接执行，适用于私聊及群聊中 @ 机器人的消息。",
+    "dingTalkUserIDsHint": "每行填写一个钉钉用户 ID（staffId 或 dingtalkId），任一项命中即可。",
     "add": "新增规则",
     "edit": "编辑规则",
     "enable": "启用",
@@ -155,6 +157,7 @@
     "ccInvalidIDs": "请检查抄送用户 ID 是否符合当前渠道的格式。",
     "ccCount": "抄送 {{total}} 人",
     "platforms": {
+      "dingtalk": "钉钉",
       "feishu": "飞书",
       "lark": "Lark",
       "telegram": "Telegram"
