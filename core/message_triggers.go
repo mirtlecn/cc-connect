@@ -81,7 +81,9 @@ type MessageTriggerEvent struct {
 	MentionedIDs     []string
 	DirectBotMention bool
 	BotMentionKnown  bool
-	RuleOnly         bool // the existing platform path would ignore this message
+	RuleOnly         bool   // the existing platform path would ignore this message
+	ChatAccessDenied bool   // the sender lacks ordinary chat access
+	OnRuleMiss       func() // optional platform feedback when matching finds no rule
 }
 
 type messageTriggerConfig struct {
@@ -326,6 +328,9 @@ func (e *Engine) prepareMessageTrigger(p Platform, msg *Message, at time.Time, e
 			msg.finishProcessingFeedback(MessageProcessingFailed)
 		} else {
 			msg.finishProcessingFeedback(MessageProcessingHandOff)
+		}
+		if !duplicate && !msg.triggerRateLimited && msg.Trigger.OnRuleMiss != nil {
+			msg.Trigger.OnRuleMiss()
 		}
 		return nil, drop
 	}

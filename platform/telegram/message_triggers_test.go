@@ -130,11 +130,6 @@ func TestTelegramMessageTriggers_ScopedAndFailClosed(t *testing.T) {
 		alter func(*Platform, *models.Message)
 	}{
 		{"unselected group", func(_ *Platform, msg *models.Message) { msg.Chat.ID = -101 }},
-		{"all groups with unallowed sender", func(p *Platform, msg *models.Message) {
-			p.SetMessageTriggerScope(nil, true, false)
-			p.allowFrom = "8"
-			msg.Chat.ID = -101
-		}},
 		{"bot sender", func(_ *Platform, msg *models.Message) { msg.From.IsBot = true }},
 		{"self unknown", func(p *Platform, _ *models.Message) { p.selfUser = nil }},
 		{"malformed mention", func(_ *Platform, msg *models.Message) { msg.Entities[0].Offset = 100 }},
@@ -153,6 +148,21 @@ func TestTelegramMessageTriggers_ScopedAndFailClosed(t *testing.T) {
 			tc.alter(p, msg)
 			p.handleMessage(context.Background(), msg)
 		})
+	}
+}
+
+func TestTelegramMessageTriggers_PrivateSenderOutsideAllowFromIsRuleOnly(t *testing.T) {
+	var got *core.Message
+	p := &Platform{allowFrom: "8", selfUser: &models.User{ID: 42, Username: "mybot"}}
+	p.handler = func(_ core.Platform, msg *core.Message) { got = msg }
+	p.SetMessageTriggerPrivateChats(true)
+
+	msg := telegramTriggerTestMessage()
+	msg.Chat = models.Chat{ID: 7, Type: models.ChatTypePrivate}
+	p.handleMessage(context.Background(), msg)
+	if got == nil || got.Trigger == nil || !got.Trigger.RuleOnly || !got.Trigger.ChatAccessDenied || !got.Trigger.PrivateChat ||
+		!slices.Equal(got.Trigger.SenderIDs, []string{"7", "@alice"}) {
+		t.Fatalf("private sender outside allow_from was not routed exclusively to rules: %#v", got)
 	}
 }
 
@@ -270,7 +280,7 @@ func (b *triggerConfirmationBot) EditMessageText(_ context.Context, params *tgbo
 
 func TestTelegramMessageTriggerConfirmation_QuoteAndCallback(t *testing.T) {
 	bot := &triggerConfirmationBot{stubTelegramBot: newStubTelegramBot()}
-	p := &Platform{bot: bot, allowFrom: "7,8"}
+	p := &Platform{bot: bot, allowFrom: "7"}
 	ctx := context.Background()
 	rctx := replyContext{chatID: -100, threadID: 55, messageID: 10}
 	if err := p.SendMessageTriggerConfirmation(ctx, rctx, strings.Repeat("é", 24), "Run?", "Yes", "No", []string{"8"}); err == nil {
@@ -305,12 +315,16 @@ func TestTelegramMessageTriggerConfirmation_QuoteAndCallback(t *testing.T) {
 		}
 		return "Admin required", false
 	})
-	for _, userID := range []int64{9, 7, 8} {
+	for _, userID := range []int64{7, 8} {
 		p.handleCallbackQuery(ctx, &models.CallbackQuery{
 			ID: "cb", From: models.User{ID: userID}, Data: "trigger-confirm:nonce:y",
 			Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: 11, Text: "Run?\n\ncc @8 @9", Chat: models.Chat{ID: -100}}},
 		})
 	}
+	p.handleCallbackQuery(ctx, &models.CallbackQuery{
+		ID: "ordinary-cb", From: models.User{ID: 8}, Data: "cmd:/status",
+		Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: 11, Chat: models.Chat{ID: -100}}},
+	})
 	if calls != 2 || len(bot.answers) != 2 || bot.answers[0].Text != "Admin required" || bot.answers[1].Text != "Approved" || len(bot.edits) != 1 {
 		t.Fatalf("callback handler calls=%d, answers=%+v, edits=%+v", calls, bot.answers, bot.edits)
 	}

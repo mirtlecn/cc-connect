@@ -451,16 +451,20 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 	channelKey := buildChannelKey(msg.Chat.ID, threadID)
 
 	userID := strconv.FormatInt(msg.From.ID, 10)
-	if !core.AllowList(p.allowFrom, userID) {
-		slog.Debug("telegram: message from unauthorized user", "user", userID)
-		return
-	}
-
-	chatName := ""
 	var trigger *core.MessageTriggerEvent
 	if isGroup || msg.Chat.Type == models.ChatTypePrivate {
 		trigger = p.triggerEvent(msg)
 	}
+	if !core.AllowList(p.allowFrom, userID) {
+		if trigger == nil || !trigger.BotMentionKnown {
+			slog.Debug("telegram: message from unauthorized user", "user", userID)
+			return
+		}
+		trigger.RuleOnly = true
+		trigger.ChatAccessDenied = true
+	}
+
+	chatName := ""
 	if isGroup {
 		chatName = msg.Chat.Title
 		if !p.groupReplyAll && !p.isDirectedAtBot(msg) {
@@ -484,7 +488,7 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 		}
 	}
 	botName := p.botUsername()
-	if trigger != nil && trigger.RuleOnly {
+	if trigger != nil && trigger.RuleOnly && !trigger.DirectBotMention {
 		botName = "" // native entities already established this is not a bot mention
 	}
 
@@ -943,12 +947,12 @@ func (p *Platform) handleCallbackQuery(ctx context.Context, cb *models.CallbackQ
 	msgID := msg.ID
 	userID := strconv.FormatInt(cb.From.ID, 10)
 
-	if !core.AllowList(p.allowFrom, userID) {
-		slog.Debug("telegram: callback from unauthorized user", "user", userID)
-		return
-	}
 	if data, ok := strings.CutPrefix(data, triggerConfirmationPrefix); ok {
 		p.handleTriggerConfirmation(ctx, bot, cb.ID, msg, userID, data)
+		return
+	}
+	if !core.AllowList(p.allowFrom, userID) {
+		slog.Debug("telegram: callback from unauthorized user", "user", userID)
 		return
 	}
 

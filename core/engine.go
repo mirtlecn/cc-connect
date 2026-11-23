@@ -3186,6 +3186,9 @@ func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *Messag
 		switch {
 		case workspace == "" && canUseProjectWorkDir:
 			// A shell action can use the project's working directory without a chat binding.
+		case workspace == "" && trigger != nil && msg.Trigger.ChatAccessDenied:
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgWsNoBinding))
+			return
 		case workspace == "":
 			// No workspace — handle init flow (unless it's a /workspace command)
 			if !strings.HasPrefix(content, "/workspace") && !strings.HasPrefix(content, "/ws ") {

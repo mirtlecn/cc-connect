@@ -1094,14 +1094,7 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 	if event.Event.Operator != nil {
 		userID = event.Event.Operator.OpenID
 	}
-
-	// Check allow_from filter: skip card actions from users not authorized to
-	// command the agent. This mirrors the plain-text message handler's check so
-	// that clicking a card button (cmd:/perm:/nav:/act:/askq:) cannot bypass
-	// the per-user allowlist when the chat-level allow_chat filter admits the
-	// chat (Issue #1852).
-	if userID == "" || !core.AllowList(p.allowFrom, userID) {
-		slog.Debug(p.tag()+": card action from unauthorized user", "user", userID)
+	if userID == "" {
 		return nil, nil
 	}
 
@@ -1114,6 +1107,16 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 	if data, ok := strings.CutPrefix(actionVal, triggerConfirmationPrefix); ok {
 		route, _ := event.Event.Action.Value[triggerConfirmationRouteKey].(string)
 		return p.onTriggerConfirmation(data, route, chatID, userID), nil
+	}
+
+	// Check allow_from filter: skip card actions from users not authorized to
+	// command the agent. This mirrors the plain-text message handler's check so
+	// that clicking a card button (cmd:/perm:/nav:/act:/askq:) cannot bypass
+	// the per-user allowlist when the chat-level allow_chat filter admits the
+	// chat (Issue #1852).
+	if !core.AllowList(p.allowFrom, userID) {
+		slog.Debug(p.tag()+": card action from unauthorized user", "user", userID)
+		return nil, nil
 	}
 	if chatID == "" {
 		chatID = userID
@@ -2209,7 +2212,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// after the chat-level allow list has admitted the chat. Do this before the
 	// existing mention filter and before allow_from: the chat controls whether
 	// cc-connect may observe the conversation, while allow_from controls who may
-	// trigger an agent turn.
+	// start an ordinary agent turn.
 	var groupHistoryCtx groupHistoryContext
 	if p.groupChatHistoryShare && chatType == "group" && !groupReplyAllForChat && botOpenID != "" &&
 		!botMentioned && !atEveryone && (isGroupHistoryMessageType(msgType) || (msgType == "image" && !activeThreadAttachment)) {
@@ -2296,17 +2299,22 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		return nil
 	}
 
-	if !core.AllowList(p.allowFrom, userID) {
-		slog.Debug(p.tag()+": message from unauthorized user", "user", userID)
-		// Announce the rejection only when the sender deliberately addressed
-		// the bot (p2p chat or explicit @mention). Group messages merely
-		// overheard via group_reply_all are dropped silently — replying to
-		// every unauthorized group member would flood the chat, and the
-		// unauthorized-chat branch above is silent for the same reason.
-		if chatType != "group" || botMentioned {
-			p.replyUnauthorizedAccess(ctx, replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey})
+	rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}
+	senderAllowed := core.AllowList(p.allowFrom, userID)
+	if !senderAllowed {
+		if trigger == nil || !trigger.BotMentionKnown {
+			slog.Debug(p.tag()+": message from unauthorized user", "user", userID)
+			// Only reply if the sender deliberately addressed the bot.
+			if chatType != "group" || botMentioned {
+				p.replyUnauthorizedAccess(ctx, rctx)
+			}
+			return nil
 		}
-		return nil
+		trigger.RuleOnly = true
+		trigger.ChatAccessDenied = true
+		if chatType != "group" || botMentioned {
+			trigger.OnRuleMiss = func() { p.replyUnauthorizedAccess(ctx, rctx) }
+		}
 	}
 
 	if msg.Content == nil && msgType != "merge_forward" && msgType != "interactive" {
@@ -2327,7 +2335,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		return nil
 	}
 	var staged []stagedAttachment
-	if p.attachmentWaitMentionEnabled() && chatType == "group" && botMentioned &&
+	if senderAllowed && p.attachmentWaitMentionEnabled() && chatType == "group" && botMentioned &&
 		p.threadIsolation && isThreadSessionKey(sessionKey) {
 		switch cmd := p.mentionedCommand(msgType, content, mentions); {
 		case cmd == "/new":
@@ -2337,10 +2345,9 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		}
 	}
 
-	rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}
 	if p.groupChatHistoryShare && chatType == "group" && !groupReplyAllForChat && botOpenID != "" && (botMentioned || atEveryone) {
 		scope := p.groupHistoryScope(msg, chatID)
-		if p.isGroupHistoryNewCommand(msgType, content, mentions) {
+		if senderAllowed && p.isGroupHistoryNewCommand(msgType, content, mentions) {
 			p.resetGroupHistory(scope)
 		} else {
 			groupHistoryCtx = p.snapshotGroupHistory(scope)

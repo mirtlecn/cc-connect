@@ -386,6 +386,27 @@ func TestMessageTriggerAdminConfirmationAndShell(t *testing.T) {
 	}
 }
 
+func TestMessageTriggerSenderWithoutChatAccessDoesNotEnterWorkspaceSetup(t *testing.T) {
+	p := newMessageTriggerTestPlatform()
+	e := NewEngine("trigger-workspace-project", &stubAgent{}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	e.SetMultiWorkspace(t.TempDir(), filepath.Join(t.TempDir(), "bindings.json"))
+	e.SetMessageTriggers([]MessageTriggerRule{{
+		Name: "agent task", Enabled: true, Platform: p.Name(), Action: "agent",
+		Groups: []MessageTriggerGroup{{Conditions: []MessageTriggerCondition{{Type: "regex", Value: "^run task$"}}}},
+	}}, MessageTriggerModel{})
+
+	msg := messageTriggerTestMessage(p, "rule-only", "run task", false)
+	msg.Trigger.ChatAccessDenied = true
+	e.ReceiveMessage(p, msg)
+	if got := p.getSent(); !slices.Equal(got, []string{"rule-only -> " + e.i18n.T(MsgWsNoBinding)}) {
+		t.Fatalf("expected only a missing workspace reply, got %q", got)
+	}
+	if len(e.initFlows) != 0 {
+		t.Fatal("a rule-only message opened the ordinary workspace setup flow")
+	}
+}
+
 func TestMessageTriggerShellDoesNotRunWithoutMatchedCapture(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture uses POSIX printf")

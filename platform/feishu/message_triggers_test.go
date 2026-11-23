@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -97,7 +98,7 @@ func TestFeishuMessageTriggers_PostBodyExcludesAttachmentNotice(t *testing.T) {
 	}
 }
 
-func TestFeishuMessageTriggers_KeepPlatformAllowListsAndFailClosed(t *testing.T) {
+func TestFeishuMessageTriggers_KeepChatAllowListAndFailClosed(t *testing.T) {
 	messages := make(chan *core.Message, 2)
 	p := newGroupReplyAllTestPlatform(t, "lark", map[string]any{
 		"allow_from": "ou_alice", "allow_chat": "oc_allowed,oc_main",
@@ -105,7 +106,6 @@ func TestFeishuMessageTriggers_KeepPlatformAllowListsAndFailClosed(t *testing.T)
 	p.SetMessageTriggerGroups([]string{"oc_allowed", "oc_forbidden"})
 
 	sendGroupHistoryText(t, p, "om_forbidden_chat", "ou_alice", "deploy", "oc_forbidden", "", false)
-	sendGroupHistoryText(t, p, "om_forbidden_sender", "ou_other", "deploy", "oc_allowed", "", false)
 	sendGroupHistoryText(t, p, "om_outside_rule", "ou_alice", "deploy", "oc_main", "", false)
 	event := makeGroupHistoryEvent(t, "om_unknown_mention", "ou_alice", "text", `{"text":"@_unknown deploy"}`, "oc_allowed", "", false)
 	event.Event.Message.Mentions = []*larkim.MentionEvent{{Key: stringPtr("@_unknown"), Id: &larkim.UserId{UserId: stringPtr("unknown")}}}
@@ -132,8 +132,80 @@ func TestFeishuMessageTriggers_KeepPlatformAllowListsAndFailClosed(t *testing.T)
 		t.Fatalf("all-groups scope did not admit group outside the explicit IDs: %#v", msg)
 	}
 	sendGroupHistoryText(t, p, "om_wildcard_forbidden_chat", "ou_alice", "deploy", "oc_forbidden", "", false)
-	sendGroupHistoryText(t, p, "om_wildcard_forbidden_sender", "ou_other", "deploy", "oc_main", "", false)
 	assertNoGroupHistoryMessage(t, messages)
+}
+
+func TestFeishuMessageTriggers_SendersOutsideAllowFromAreRuleOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		chatType    string
+		mentionsBot bool
+	}{
+		{name: "group", chatType: "group"},
+		{name: "direct mention", chatType: "group", mentionsBot: true},
+		{name: "private", chatType: "p2p"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			messages := make(chan *core.Message, 1)
+			p := receiptTestPlatform(t, map[string]any{}, func(w http.ResponseWriter, r *http.Request) {
+				t.Errorf("unexpected Feishu request: %s", r.URL.Path)
+				http.NotFound(w, r)
+			})
+			p.botOpenID = "ou_bot"
+			p.allowFrom = "ou_alice"
+			p.userNameCache.Store("ou_other", "Other")
+			p.chatNameCache.Store("oc_allowed", "Allowed group")
+			p.handler = func(_ core.Platform, msg *core.Message) { messages <- msg }
+			p.SetMessageTriggerScope([]string{"oc_allowed"}, false, true)
+
+			event := makeGroupHistoryEvent(t, "om_source", "ou_other", "text", `{"text":"deploy"}`, "oc_allowed", "", tc.mentionsBot)
+			event.Event.Message.ChatType = stringPtr(tc.chatType)
+			if err := p.onMessage(context.Background(), event); err != nil {
+				t.Fatal(err)
+			}
+			msg := awaitGroupHistoryMessage(t, messages)
+			if msg.Trigger == nil || !msg.Trigger.RuleOnly || !msg.Trigger.ChatAccessDenied || msg.Trigger.DirectBotMention != tc.mentionsBot ||
+				!slices.Equal(msg.Trigger.SenderIDs, []string{"ou_other"}) {
+				t.Fatalf("sender outside allow_from was not routed exclusively to rules: %#v", msg.Trigger)
+			}
+		})
+	}
+}
+
+func TestFeishuMessageTriggers_RejectsOrdinaryCommandWhenNoRuleMatches(t *testing.T) {
+	replies := make(chan string, 1)
+	p := receiptTestPlatform(t, map[string]any{}, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Content string `json:"content"`
+		}
+		if r.URL.Path != "/open-apis/im/v1/messages/om_command/reply" || json.NewDecoder(r.Body).Decode(&body) != nil {
+			t.Errorf("unexpected Feishu reply request: %s", r.URL.Path)
+		}
+		replies <- body.Content
+		_, _ = fmt.Fprint(w, `{"code":0}`)
+	})
+	p.botOpenID = "ou_bot"
+	p.allowFrom = "ou_alice"
+	p.userNameCache.Store("ou_other", "Other")
+	p.chatNameCache.Store("oc_allowed", "Allowed group")
+	engine := core.NewEngine("trigger-access", &groupReplyAllCUJAgent{}, []core.Platform{p},
+		filepath.Join(t.TempDir(), "sessions.json"), core.LangEnglish)
+	t.Cleanup(func() { _ = engine.Stop() })
+	engine.SetMessageTriggers([]core.MessageTriggerRule{{
+		Name: "deploy", Enabled: true, Platform: "feishu", Action: "agent",
+		Groups: []core.MessageTriggerGroup{{Conditions: []core.MessageTriggerCondition{{Type: "regex", Value: "^deploy$"}}}},
+	}}, core.MessageTriggerModel{})
+	p.handler = engine.ReceiveMessage
+
+	sendGroupHistoryText(t, p, "om_command", "ou_other", "/status", "oc_allowed", "", true)
+	select {
+	case reply := <-replies:
+		if !strings.Contains(reply, core.UnauthorizedAccessMessage) {
+			t.Fatalf("ordinary command outside allow_from produced %q", reply)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("did not receive the ordinary access rejection")
+	}
 }
 
 func TestFeishuMessageTriggerReply_NativeMentionAndOriginalThread(t *testing.T) {
@@ -224,7 +296,7 @@ func TestFeishuMessageTriggerConfirmation_QuoteAndCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p.allowFrom = "ou_member,ou_admin"
+	p.allowFrom = "ou_member"
 	p.allowChat = "oc_test_chat"
 	calls := 0
 	p.SetMessageTriggerConfirmationHandler(func(id, chatID, userID string, approved bool) (string, bool) {
@@ -268,8 +340,11 @@ func TestFeishuMessageTriggerConfirmation_QuoteAndCallback(t *testing.T) {
 	if response, err := p.onCardAction(wrongChat); err != nil || response != nil {
 		t.Fatalf("callback from excluded chat = %+v, %v", response, err)
 	}
-	if response, err := p.onCardAction(event("ou_excluded", "trigger-confirm:nonce:y")); err != nil || response != nil {
-		t.Fatalf("callback from excluded user = %+v, %v", response, err)
+	if response, err := p.onCardAction(event("ou_admin", "cmd:/status")); err != nil || response != nil {
+		t.Fatalf("ordinary callback still requires allow_from: %+v, %v", response, err)
+	}
+	if response, err := p.onCardAction(event("", "trigger-confirm:nonce:y")); err != nil || response != nil {
+		t.Fatalf("callback without an operator = %+v, %v", response, err)
 	}
 	if calls != 2 {
 		t.Fatalf("confirmation handler got %d calls, want 2", calls)

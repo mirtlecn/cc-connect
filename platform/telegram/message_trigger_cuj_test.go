@@ -54,7 +54,7 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 		return &stdlibTypingTicker{Ticker: time.NewTicker(d)}
 	}
 	p.enableReactions = true
-	p.allowFrom = "7,8,9"
+	p.allowFrom = "6"
 	agent := &telegramTriggerCUJAgent{
 		prompts: make(chan string, 4), events: make(chan core.Event, 4),
 	}
@@ -75,6 +75,7 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 			Match: "and", Conditions: []core.MessageTriggerCondition{
 				{Type: "group", Values: []string{"-100"}},
 				{Type: "regex", Value: `^deploy\b`},
+				{Type: "sender", Values: []string{"7"}},
 			},
 		}},
 		Action: "agent", Confirm: true, Prompt: "Configured instruction",
@@ -84,10 +85,10 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 	p.handler = engine.ReceiveMessage
 
 	chat := models.Chat{ID: -100, Type: models.ChatTypeSupergroup, IsForum: true}
-	send := func(id int, text string, entities ...models.MessageEntity) {
+	send := func(id int, sender int64, text string, entities ...models.MessageEntity) {
 		p.processUpdate(ctx, &models.Update{Message: &models.Message{
 			ID: id, Date: int(time.Now().Unix()), Chat: chat, MessageThreadID: 55, Text: text, Entities: entities,
-			From: &models.User{ID: 7, Username: "alice"},
+			From: &models.User{ID: sender, Username: "alice"},
 		}})
 	}
 	await := func(method string) url.Values {
@@ -191,7 +192,7 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 		From:           &models.User{ID: 7, Username: "alice"},
 		ReplyToMessage: &models.Message{From: &models.User{ID: 8, FirstName: "Bob"}, Text: "deploy quoted text"},
 	}})
-	send(101, "deploy first")
+	send(101, 7, "deploy first")
 	first := await("sendMessage")
 	assertSourceReaction("101", "⚡")
 	firstButtons := readConfirmButtons(first, 101)
@@ -216,11 +217,11 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 	rule.CCEnabled = true
 	engine.SetMessageTriggers([]core.MessageTriggerRule{rule}, core.MessageTriggerModel{})
 	link := models.MessageEntity{Type: models.MessageEntityTypeTextLink, Length: len("deploy"), URL: "https://example.test/runbook"}
-	send(102, "deploy approved", link)
+	send(102, 7, "deploy approved", link)
 	second := await("sendMessage")
 	assertSourceReaction("102", "⚡")
 	secondButtons := readConfirmButtons(second, 102)
-	send(102, "deploy approved", link) // Telegram can deliver the same source update again.
+	send(102, 7, "deploy approved", link) // Telegram can deliver the same source update again.
 	click(8, secondButtons[0], second)
 	if text := await("answerCallbackQuery").Get("text"); !strings.Contains(text, "Task submitted") {
 		t.Fatalf("admin approval feedback = %q", text)
@@ -242,18 +243,26 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 	rule.Confirm = false
 	rule.Groups[0].Conditions[1].Value = `^(deploy\b|/status\b)`
 	engine.SetMessageTriggers([]core.MessageTriggerRule{rule}, core.MessageTriggerModel{})
-	mentionBot := func(id int, text string) {
+	mentionBot := func(id int, sender int64, text string) {
 		const mention = "@TESTBOT"
-		send(id, mention+" "+text, models.MessageEntity{Type: models.MessageEntityTypeMention, Length: len(mention)})
+		send(id, sender, mention+" "+text, models.MessageEntity{Type: models.MessageEntityTypeMention, Length: len(mention)})
 	}
-	mentionBot(103, "deploy via direct mention")
+	mentionBot(103, 7, "deploy via direct mention")
 	assertTriggeredResult(await("sendMessage"), 103)
 	if prompt := <-agent.prompts; !strings.HasPrefix(prompt, "Configured instruction\n\ndeploy via direct mention") {
 		t.Fatalf("matched direct @bot agent prompt = %q", prompt)
 	}
 	awaitIdle()
 
-	mentionBot(104, "ordinary direct mention")
+	mentionBot(107, 8, "deploy from a sender outside the rule")
+	mentionBot(108, 7, "ordinary mention from outside allow_from")
+	mentionBot(109, 7, "/status")
+	if len(requests["sendMessage"]) != 0 || len(agent.prompts) != 0 {
+		t.Fatal("a non-matching message or command from outside allow_from entered normal chat")
+	}
+
+	p.allowFrom = "7"
+	mentionBot(104, 7, "ordinary direct mention")
 	assertOrdinaryTurn("ordinary direct mention")
 
 	p.processUpdate(ctx, &models.Update{Message: &models.Message{
@@ -263,7 +272,7 @@ func TestCUJ_TG1_MessageTriggerApprovalAndOriginalReply(t *testing.T) {
 	}})
 	assertOrdinaryTurn("deploy in reply to bot")
 
-	mentionBot(106, "/status")
+	mentionBot(106, 7, "/status")
 	if status := await("sendMessage"); !strings.Contains(strings.ToLower(status.Get("text")), "cc-connect status") {
 		t.Fatalf("/status bypassed the command handler: %v", status)
 	}

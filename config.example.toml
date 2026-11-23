@@ -1101,7 +1101,9 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # Group rules require im:message.group_msg on Feishu/Lark and ordinary group messages on Telegram.
 # 匹配群聊时，飞书/Lark 需发布 im:message.group_msg 权限，Telegram 机器人需能接收普通群消息。
 # Rules match ordinary group and private messages from bottom to top, including direct bot mentions.
-# 群聊和私聊的普通消息按规则从下往上匹配，包括直接 @ 机器人的消息。未命中的私聊或直接 @ 消息进入普通对话。
+# 群聊和私聊的普通消息按规则从下往上匹配，包括直接 @ 机器人的消息。
+# Use sender conditions for rule access. allow_from controls ordinary chat and commands; admin_from controls rule confirmations.
+# 用 sender 条件限制规则发件人。allow_from 管理普通对话和命令权限，admin_from 管理规则确认权限。
 # Each condition group can have one chat_scope. It applies before the group's AND/OR conditions.
 # 每个条件组最多一个 chat_scope，先判断会话范围，再按组内的 AND/OR 判断其余条件。
 # Without chat_scope or legacy group conditions, the rule covers group and private chats.
