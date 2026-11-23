@@ -855,18 +855,10 @@ func TestPiSessionDir_WindowsPathEncoding(t *testing.T) {
 }
 
 func TestSettingsPath(t *testing.T) {
-	savedEnv := os.Getenv("PI_CODING_AGENT_DIR")
-	defer func() {
-		if savedEnv != "" {
-			_ = os.Setenv("PI_CODING_AGENT_DIR", savedEnv)
-		} else {
-			_ = os.Unsetenv("PI_CODING_AGENT_DIR")
-		}
-	}()
-
-	t.Setenv("PI_CODING_AGENT_DIR", "/custom")
-	if p := settingsPath(); p != "/custom/settings.json" {
-		t.Errorf("settingsPath() = %q, want /custom/settings.json", p)
+	dir := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", dir)
+	if got, want := settingsPath(), filepath.Join(dir, "settings.json"); got != want {
+		t.Errorf("settingsPath() = %q, want %q", got, want)
 	}
 }
 
@@ -1249,16 +1241,23 @@ func TestCleanAttachments_NonexistentDir(t *testing.T) {
 
 func TestPiSessionAttachmentDirsAreIsolated(t *testing.T) {
 	workDir := t.TempDir()
-	s1, err := newPiSession(context.Background(), "pi", nil, workDir, "", "", "", false, "", nil)
-	if err != nil {
-		t.Fatal(err)
+	sessions := make([]*piSession, 16)
+	seen := make(map[string]bool, len(sessions))
+	for i := range sessions {
+		s, err := newPiSession(context.Background(), "pi", nil, workDir, "", "", "", false, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		sessions[i] = s
+		if seen[s.attachDir] {
+			t.Fatalf("session %d reused attachment directory %q", i, s.attachDir)
+		}
+		seen[s.attachDir] = true
 	}
-	s2, err := newPiSession(context.Background(), "pi", nil, workDir, "", "", "", false, "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s1.attachDir == s2.attachDir {
-		t.Fatalf("expected distinct attachment dirs, got %q", s1.attachDir)
+	s1, s2 := sessions[0], sessions[1]
+	if _, err := os.Stat(filepath.Dir(s1.attachDir)); !os.IsNotExist(err) {
+		t.Fatalf("creating sessions without attachments must not create the attachment directory, stat error: %v", err)
 	}
 
 	if err := os.MkdirAll(s1.attachDir, 0o755); err != nil {
@@ -1276,8 +1275,12 @@ func TestPiSessionAttachmentDirsAreIsolated(t *testing.T) {
 
 	cleanAttachments(s1.attachDir)
 
-	if _, err := os.Stat(filepath.Join(s2.attachDir, "two.txt")); err != nil {
-		t.Fatalf("cleaning one session removed another session's attachment: %v", err)
+	if _, err := os.Stat(filepath.Join(s1.attachDir, "one.txt")); !os.IsNotExist(err) {
+		t.Fatalf("cleaning the first session left its attachment behind, stat error: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(s2.attachDir, "two.txt"))
+	if err != nil || string(got) != "two" {
+		t.Fatalf("cleaning one session changed another session's attachment: %q, %v", got, err)
 	}
 }
 
@@ -2198,28 +2201,7 @@ func newFakeRPCSession(t *testing.T, sessionID, cmd, workDir string) *piSession 
 // newPiSession, so callers can observe what the engine sees.
 func newFakeRPCSessionRealistic(t *testing.T, sessionID string) *piSession {
 	t.Helper()
-	// Write the script to a temp file so we don't have to fight shell
-	// quoting inside Go string literals.
-	scriptPath := filepath.Join(t.TempDir(), "fake-pi.sh")
-	// Push a non-session event first, then loop reading stdin. When we see
-	// the get_state probe we respond with a real get_state response.
-	scriptBody := fmt.Sprintf(`#!/bin/sh
-echo '{"type":"extension_ui_request","id":"ext-init","method":"setStatus","statusKey":"plan-mode"}'
-while IFS= read -r line; do
-    case "$line" in
-        *get_state*)
-            cat <<EOF
-{"id":"cc-connect-state-probe","type":"response","command":"get_state","success":true,"data":{"sessionId":"%s","sessionFile":"/tmp/fake.jsonl"}}
-EOF
-            ;;
-    esac
-done
-`, sessionID)
-	if err := os.WriteFile(scriptPath, []byte(scriptBody), 0o755); err != nil {
-		t.Fatalf("write fake script: %v", err)
-	}
-
-	s, err := newPiSession(context.Background(), scriptPath, nil, t.TempDir(), "", "", "", true, "", nil)
+	s, err := newPiRPCStartupFixture(t, context.Background(), "success", sessionID)
 	if err != nil {
 		t.Fatalf("newPiSession (realistic fake): %v", err)
 	}
@@ -2246,25 +2228,10 @@ func TestPiSession_RPC_StartupProbe_HandlesFailureResponse(t *testing.T) {
 	// handleEvent must log a warning and leave sessionID empty instead of
 	// panicking or storing junk. rpcReady therefore does not close, and the
 	// constructor returns the standard 30s "did not become ready" error.
-	scriptPath := filepath.Join(t.TempDir(), "fake-pi.sh")
-	scriptBody := `#!/bin/sh
-echo '{"type":"extension_ui_request","id":"ext-init","method":"setStatus","statusKey":"plan-mode"}'
-while IFS= read -r line; do
-    case "$line" in
-        *get_state*)
-            echo '{"id":"cc-connect-state-probe","type":"response","command":"get_state","success":false,"error":"session not available"}'
-            ;;
-    esac
-done
-`
-	if err := os.WriteFile(scriptPath, []byte(scriptBody), 0o755); err != nil {
-		t.Fatalf("write fake script: %v", err)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	s, err := newPiSession(ctx, scriptPath, nil, t.TempDir(), "", "", "", true, "", nil)
+	s, err := newPiRPCStartupFixture(t, ctx, "failure", "")
 	if err == nil {
 		defer func() { _ = s.Close() }()
 		t.Fatalf("newPiSession succeeded (id=%q); failure response should leave session id empty and time out", s.CurrentSessionID())
@@ -2276,23 +2243,10 @@ done
 }
 
 func TestPiSession_RPC_StartupProbe_DoesNotCloseOnExtensionUI(t *testing.T) {
-	// Variant: the fake pi script emits extension_ui_request events forever
+	// Variant: the fake Pi emits extension_ui_request events indefinitely
 	// without ever responding to get_state. rpcReady must NOT close (the
 	// session id never arrives), and the constructor must time out instead
 	// of returning early with an empty id.
-	scriptPath := filepath.Join(t.TempDir(), "fake-pi.sh")
-	scriptBody := `#!/bin/sh
-i=0
-echo '{"type":"extension_ui_request","id":"e0","method":"setStatus","statusKey":"plan-mode"}'
-while IFS= read -r line; do
-    i=$((i+1))
-    echo "{\"type\":\"extension_ui_request\",\"id\":\"e$i\",\"method\":\"setStatus\",\"statusKey\":\"plan-mode\"}"
-done
-`
-	if err := os.WriteFile(scriptPath, []byte(scriptBody), 0o755); err != nil {
-		t.Fatalf("write fake script: %v", err)
-	}
-
 	// Bound the wait: if the fix is wrong (rpcReady closed too early on the
 	// extension_ui_request), newPiSession returns within milliseconds with
 	// CurrentSessionID()=="". A correct fix keeps rpcReady open until the
@@ -2302,7 +2256,7 @@ done
 	defer cancel()
 
 	start := time.Now()
-	s, err := newPiSession(ctx, scriptPath, nil, t.TempDir(), "", "", "", true, "", nil)
+	s, err := newPiRPCStartupFixture(t, ctx, "extension-ui", "")
 	elapsed := time.Since(start)
 	if err == nil {
 		defer func() { _ = s.Close() }()
