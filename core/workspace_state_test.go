@@ -93,6 +93,7 @@ func TestNormalizeWorkspacePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	missingDir := filepath.Join(tmp, "missing")
 
 	tests := []struct {
 		name  string
@@ -104,7 +105,7 @@ func TestNormalizeWorkspacePath(t *testing.T) {
 		{"dot segment", filepath.Join(tmp, ".", "real-project"), resolvedRealDir},
 		{"dotdot segment", filepath.Join(tmp, "real-project", "subdir", ".."), resolvedRealDir},
 		{"symlink resolved", symlink, resolvedRealDir},
-		{"nonexistent uses Clean only", "/nonexistent/path/./foo/../bar", "/nonexistent/path/bar"},
+		{"nonexistent uses Clean only", missingDir + "/./foo/../bar", filepath.Join(missingDir, "bar")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

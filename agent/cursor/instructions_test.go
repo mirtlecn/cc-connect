@@ -2,6 +2,7 @@ package cursor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,14 +15,9 @@ import (
 func TestInstructionsFileReachesCursorOnEveryTurn(t *testing.T) {
 	dir := t.TempDir()
 	instructions := filepath.Join(dir, "AGENTS.md")
-	cli := filepath.Join(dir, "cursor-agent")
-	script := "#!/bin/sh\nfor arg do printf '%s\\n' \"$arg\"; done > \"$CURSOR_TEST_ARGS\"\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\",\"session_id\":\"cursor-session\"}'\n"
-	if err := os.WriteFile(cli, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
 	argsFile := filepath.Join(dir, "args")
 	a, err := New(map[string]any{
-		"cmd": cli, "work_dir": dir, "model": "fixture-alpha", "mode": "yolo",
+		"cmd": cursorInstructionsFixture(t), "work_dir": dir, "model": "fixture-alpha", "mode": "yolo",
 		"instructions_file": instructions,
 		"env":               map[string]any{"CURSOR_TEST_ARGS": argsFile},
 	})
@@ -80,12 +76,8 @@ func TestInstructionsFileReachesCursorOnEveryTurn(t *testing.T) {
 
 func TestMissingInstructionsFileRefusesTurn(t *testing.T) {
 	dir := t.TempDir()
-	cli := filepath.Join(dir, "cursor-agent")
-	if err := os.WriteFile(cli, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
 	a, err := New(map[string]any{
-		"cmd": cli, "work_dir": dir,
+		"cmd": cursorInstructionsFixture(t), "work_dir": dir,
 		"instructions_file": filepath.Join(dir, "missing"),
 	})
 	if err != nil {
@@ -103,4 +95,28 @@ func TestMissingInstructionsFileRefusesTurn(t *testing.T) {
 	if err := session.Send("request", "", nil, nil); err == nil || !strings.Contains(err.Error(), "instructions") {
 		t.Fatalf("missing managed instructions must fail explicitly, got %v", err)
 	}
+}
+
+func cursorInstructionsFixture(t *testing.T) []string {
+	t.Helper()
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []string{bin, "-test.run=^TestCursorInstructionsFixtureProcess$", "--"}
+}
+
+func TestCursorInstructionsFixtureProcess(t *testing.T) {
+	argsPath := os.Getenv("CURSOR_TEST_ARGS")
+	if argsPath == "" {
+		return
+	}
+	if len(os.Args) < 3 || os.Args[2] != "--" {
+		os.Exit(2)
+	}
+	if err := os.WriteFile(argsPath, []byte(strings.Join(os.Args[3:], "\n")+"\n"), 0o600); err != nil {
+		os.Exit(2)
+	}
+	fmt.Println("{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\",\"session_id\":\"cursor-session\"}")
+	os.Exit(0)
 }

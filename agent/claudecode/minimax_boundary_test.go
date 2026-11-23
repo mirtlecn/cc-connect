@@ -2,21 +2,28 @@ package claudecode
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/chenhg5/cc-connect/core"
 )
 
-// The agent delegates inference to Claude Code. A local echo executable checks
+// The agent delegates inference to Claude Code. A local helper checks
 // that the selected model and provider reach that process without any inference.
 func TestMiniMaxModelHandoffPreservesExplicitSelection(t *testing.T) {
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, model := range []string{"MiniMax-M3.1-Flash", "MiniMax-M3", "MiniMax-M2.7", "saved-custom-model", "claude-sonnet-4"} {
 		t.Run(model, func(t *testing.T) {
 			a := &Agent{
-				cmd: "/bin/echo", workDir: t.TempDir(), model: "agent-default", mode: "default",
-				providers: []core.ProviderConfig{{Name: "minimax", BaseURL: "https://api.minimax.io/anthropic", APIKey: "mock-key", Model: model}},
-				activeIdx: 0,
+				cmd: bin, workDir: t.TempDir(), model: "agent-default", mode: "default",
+				cliExtraArgs: []string{"-test.run=^TestHelperProcess$", "--", "stdin-eof-exit"},
+				configEnv:    []string{"GO_WANT_HELPER_PROCESS=1"},
+				providers:    []core.ProviderConfig{{Name: "minimax", BaseURL: "https://api.minimax.io/anthropic", APIKey: "mock-key", Model: model}},
+				activeIdx:    0,
 			}
 			env := envSliceToMap(a.providerEnvLocked())
 			if env["ANTHROPIC_MODEL"] != model || env["ANTHROPIC_BASE_URL"] != "https://api.minimax.io/anthropic" || env["ANTHROPIC_AUTH_TOKEN"] != "mock-key" {

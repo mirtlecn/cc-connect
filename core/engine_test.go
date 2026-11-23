@@ -12091,7 +12091,12 @@ func TestCmdShell_BareCommand_ShowsUsage(t *testing.T) {
 
 func TestCmdShell_MultiWorkspaceUsesSharedBindingWorkDir(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
-	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	const agentName = "test-shell-workspace"
+	RegisterAgent(agentName, func(map[string]any) (Agent, error) {
+		return &namedTestAgent{name: agentName}, nil
+	})
+	t.Cleanup(func() { delete(agentFactories, agentName) })
+	e := NewEngine("test", &namedTestAgent{name: agentName}, []Platform{p}, "", LangEnglish)
 
 	baseDir := t.TempDir()
 	bindStore := filepath.Join(t.TempDir(), "bindings.json")
@@ -12104,26 +12109,8 @@ func TestCmdShell_MultiWorkspaceUsesSharedBindingWorkDir(t *testing.T) {
 	normalizedWsDir := normalizeWorkspacePath(wsDir)
 	e.workspaceBindings.Bind(sharedWorkspaceBindingsKey, "ch1", "shared-shell", normalizedWsDir)
 
-	msg := &Message{
-		SessionKey: "test:ch1:user1",
-		Content:    "/shell pwd",
-		ReplyCtx:   "ctx",
-	}
-	e.cmdShell(p, msg, "/shell pwd")
-
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		sent := p.getSent()
-		if len(sent) > 0 {
-			if !strings.Contains(sent[0], normalizedWsDir) {
-				t.Fatalf("expected shell output to contain shared workspace %q, got %q", normalizedWsDir, sent[0])
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for shell response")
-		}
-		time.Sleep(10 * time.Millisecond)
+	if output := runWorkspacePwd(t, e, p); !strings.Contains(output, normalizedWsDir) {
+		t.Fatalf("expected shell output to contain shared workspace %q, got %q", normalizedWsDir, output)
 	}
 }
 
@@ -12139,38 +12126,45 @@ func TestCmdShell_MultiWorkspaceIgnoresMissingSharedBinding(t *testing.T) {
 	missingDir := filepath.Join(baseDir, "missing-shared-workspace")
 	e.workspaceBindings.Bind(sharedWorkspaceBindingsKey, "ch1", "shared-shell", missingDir)
 
-	msg := &Message{
-		SessionKey: "test:ch1:user1",
-		Content:    "/shell pwd",
-		ReplyCtx:   "ctx",
-	}
-	e.cmdShell(p, msg, "/shell pwd")
-
-	deadline := time.Now().Add(2 * time.Second)
 	// Normalize both the expected and missing paths to handle macOS symlink
 	// resolution (e.g. /var/folders/ -> /private/var/folders/). Then check
 	// that the shell output contains the resolved expected path and does NOT
 	// contain the resolved missing path.
 	expectedResolved := normalizeWorkspacePath(agent.workDir)
 	missingResolved := normalizeWorkspacePath(missingDir)
-	for {
-		sent := p.getSent()
-		if len(sent) > 0 {
-			// With streaming progress, the final result is the last sent message
-			output := sent[len(sent)-1]
-			if !strings.Contains(output, agent.workDir) && !strings.Contains(output, expectedResolved) {
-				t.Fatalf("expected shell output to fall back to agent work dir %q (resolved %q), got %q", agent.workDir, expectedResolved, output)
+	output := runWorkspacePwd(t, e, p)
+	if !strings.Contains(output, agent.workDir) && !strings.Contains(output, expectedResolved) {
+		t.Fatalf("expected shell output to fall back to agent work dir %q (resolved %q), got %q", agent.workDir, expectedResolved, output)
+	}
+	if strings.Contains(output, missingDir) || strings.Contains(output, missingResolved) {
+		t.Fatalf("expected shell output to ignore missing shared workspace %q, got %q", missingDir, output)
+	}
+}
+
+func runWorkspacePwd(t *testing.T, e *Engine, p *stubPlatformEngine) string {
+	t.Helper()
+	command := "/shell pwd"
+	if runtime.GOOS == "windows" {
+		command = "/shell (Get-Location).Path"
+	}
+	msg := &Message{SessionKey: "test:ch1:user1", Content: command, ReplyCtx: "ctx"}
+	e.cmdShell(p, msg, command)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, output := range p.getSent() {
+			if strings.HasPrefix(output, "⏳ ") {
+				continue
 			}
-			if strings.Contains(output, missingDir) || strings.Contains(output, missingResolved) {
-				t.Fatalf("expected shell output to ignore missing shared workspace %q, got %q", missingDir, output)
+			if !strings.HasPrefix(output, "✅ ") {
+				t.Fatalf("shell command failed: %q", output)
 			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for shell response")
+			return output
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	t.Fatalf("timed out waiting for final shell response, got %q", p.getSent())
+	return ""
 }
 
 // --- truncateRunes tests ---

@@ -220,8 +220,9 @@ func TestSession_LateUnlockDropped(t *testing.T) {
 	if !ok {
 		t.Fatal("first TryLock should succeed")
 	}
-	if _, broken := s.BreakStaleLock(0); !broken {
-		t.Fatal("BreakStaleLock(0) should break the held lock")
+	s.busySince = s.busySince.Add(-time.Minute)
+	if _, broken := s.BreakStaleLock(time.Second); !broken {
+		t.Fatal("BreakStaleLock should break the stale lock")
 	}
 	gen2, ok := s.TryLock()
 	if !ok {
@@ -243,14 +244,16 @@ func TestSession_LateUnlockDropped(t *testing.T) {
 // TestSession_BreakStaleLockThreshold verifies the held-duration gate: a lock
 // held shorter than maxHeld is never broken, one held longer is.
 func TestSession_BreakStaleLockThreshold(t *testing.T) {
+	const maxHeld = time.Hour
 	s := &Session{}
 	if _, ok := s.TryLock(); !ok {
 		t.Fatal("TryLock should succeed")
 	}
-	if _, broken := s.BreakStaleLock(time.Hour); broken {
+	if _, broken := s.BreakStaleLock(maxHeld); broken {
 		t.Fatal("lock held shorter than maxHeld must not break")
 	}
-	if _, broken := s.BreakStaleLock(0); !broken {
+	s.busySince = s.busySince.Add(-2 * maxHeld)
+	if _, broken := s.BreakStaleLock(maxHeld); !broken {
 		t.Fatal("lock held longer than maxHeld should break")
 	}
 	if s.Busy() {

@@ -3,9 +3,11 @@ package kimi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -167,15 +169,16 @@ func TestAgentStartSession(t *testing.T) {
 }
 
 func TestAgentMemoryAndSkill(t *testing.T) {
-	a := &Agent{workDir: "/tmp/my-project", activeIdx: -1}
+	workDir := t.TempDir()
+	a := &Agent{workDir: workDir, activeIdx: -1}
 
-	assert.Equal(t, "/tmp/my-project/AGENTS.md", a.ProjectMemoryFile())
+	assert.Equal(t, filepath.Join(workDir, "AGENTS.md"), a.ProjectMemoryFile())
 	assert.NotEmpty(t, a.GlobalMemoryFile())
 
 	skillDirs := a.SkillDirs()
 	require.Len(t, skillDirs, 2)
-	assert.Contains(t, skillDirs[0], ".kimi/skills")
-	assert.Contains(t, skillDirs[1], ".kimi/skills")
+	assert.Contains(t, skillDirs[0], filepath.Join(".kimi", "skills"))
+	assert.Contains(t, skillDirs[1], filepath.Join(".kimi", "skills"))
 }
 
 func TestAgentAvailableModels(t *testing.T) {
@@ -190,28 +193,19 @@ func TestAgentAvailableModels(t *testing.T) {
 // exposes its catalog via `kimi provider list --json`; discovery must use the
 // configured command environment.
 func TestAgentAvailableModels_UsesKimiCodeCatalog(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "fake-kimi")
-	script := `#!/bin/sh
-if [ "$1" != "--shim" ] || [ "$2" != "provider" ] || [ "$3" != "list" ] || [ "$4" != "--json" ]; then
-  exit 2
-fi
-if [ "$KIMI_DISCOVERY_TOKEN" != "available" ] || [ "$(pwd -P)" != "$EXPECTED_WORK_DIR" ]; then
-  exit 3
-fi
-printf '%s\n' '{"providers":{"private":{"apiKey":"must-not-be-used"}},"models":{"private/model-z":{"displayName":"Model Z"},"private/model-a":{"displayName":"Model A"}}}'
-`
-	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
+	bin, err := os.Executable()
+	require.NoError(t, err)
 
 	workDir := t.TempDir()
 	canonicalWorkDir, err := filepath.EvalSymlinks(workDir)
 	require.NoError(t, err)
 	a := &Agent{
 		cmd:          bin,
-		cliExtraArgs: []string{"--shim"},
+		cliExtraArgs: []string{"-test.run=^TestKimiCatalogFixtureProcess$", "--", "--shim"},
 		workDir:      workDir,
 		configEnv: []string{
 			"KIMI_DISCOVERY_TOKEN=available",
-			"EXPECTED_WORK_DIR=" + canonicalWorkDir,
+			"CC_CONNECT_TEST_KIMI_WORK_DIR=" + canonicalWorkDir,
 		},
 		activeIdx: -1,
 	}
@@ -223,18 +217,42 @@ printf '%s\n' '{"providers":{"private":{"apiKey":"must-not-be-used"}},"models":{
 	}, models)
 }
 
+func TestKimiCatalogFixtureProcess(t *testing.T) {
+	if marker := os.Getenv("CC_CONNECT_TEST_KIMI_MARKER"); marker != "" {
+		if err := os.WriteFile(marker, []byte("called"), 0o600); err != nil {
+			os.Exit(2)
+		}
+		fmt.Println(`{"models":{"cli/model":{}}}`)
+		os.Exit(0)
+	}
+	wantDir := os.Getenv("CC_CONNECT_TEST_KIMI_WORK_DIR")
+	if wantDir == "" {
+		return
+	}
+	if len(os.Args) < 2 || !slices.Equal(os.Args[2:], []string{"--", "--shim", "provider", "list", "--json"}) {
+		os.Exit(2)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		os.Exit(3)
+	}
+	cwd, err = filepath.EvalSymlinks(cwd)
+	if err != nil || cwd != wantDir || os.Getenv("KIMI_DISCOVERY_TOKEN") != "available" {
+		os.Exit(3)
+	}
+	fmt.Println(`{"providers":{"private":{"apiKey":"must-not-be-used"}},"models":{"private/model-z":{"displayName":"Model Z"},"private/model-a":{"displayName":"Model A"}}}`)
+	os.Exit(0)
+}
+
 func TestAgentAvailableModels_PrefersConfiguredModels(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "fake-kimi")
+	bin, err := os.Executable()
+	require.NoError(t, err)
 	marker := filepath.Join(t.TempDir(), "cli-called")
-	script := `#!/bin/sh
-printf 'called' > "$KIMI_MARKER"
-printf '%s\n' '{"models":{"cli/model":{}}}'
-`
-	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
 
 	a := &Agent{
-		cmd:       bin,
-		configEnv: []string{"KIMI_MARKER=" + marker},
+		cmd:          bin,
+		cliExtraArgs: []string{"-test.run=^TestKimiCatalogFixtureProcess$", "--"},
+		configEnv:    []string{"CC_CONNECT_TEST_KIMI_MARKER=" + marker},
 		providers: []core.ProviderConfig{{
 			Name:   "configured",
 			Models: []core.ModelOption{{Name: "configured/model"}},
@@ -244,7 +262,7 @@ printf '%s\n' '{"models":{"cli/model":{}}}'
 
 	models := a.AvailableModels(context.Background())
 	require.Equal(t, []core.ModelOption{{Name: "configured/model"}}, models)
-	_, err := os.Stat(marker)
+	_, err = os.Stat(marker)
 	require.ErrorIs(t, err, os.ErrNotExist, "configured models should skip CLI discovery")
 }
 
@@ -255,6 +273,7 @@ printf '%s\n' '{"models":{"cli/model":{}}}'
 func TestListKimiSessions_BothFlavors(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	workDir := t.TempDir()
 
@@ -267,8 +286,9 @@ func TestListKimiSessions_BothFlavors(t *testing.T) {
 	// Kimi Code CLI session in the same workDir.
 	modernDir := filepath.Join(home, ".kimi-code", "sessions", "wd_proj_ab12", "session_modern-1")
 	require.NoError(t, os.MkdirAll(modernDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(modernDir, "state.json"),
-		[]byte(`{"title":"modern chat","workDir":"`+workDir+`"}`), 0o644))
+	modernState, err := json.Marshal(map[string]string{"title": "modern chat", "workDir": workDir})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(modernDir, "state.json"), modernState, 0o644))
 	// Kimi Code stores the transcript at agents/main/wire.jsonl (no
 	// context.jsonl). Include tool/assistant events that must NOT be counted.
 	require.NoError(t, os.MkdirAll(filepath.Join(modernDir, "agents", "main"), 0o755))
@@ -329,13 +349,15 @@ func TestListKimiSessions_BothFlavors(t *testing.T) {
 func TestParseKimiSessionDir_WireJSONLMessageCount(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	workDir := t.TempDir()
 	sessionID := "session_wire-1"
 	sessionDir := filepath.Join(home, ".kimi-code", "sessions", "wd_proj_ab12", sessionID)
 	require.NoError(t, os.MkdirAll(filepath.Join(sessionDir, "agents", "main"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "state.json"),
-		[]byte(`{"title":"wire chat","workDir":"`+workDir+`"}`), 0o644))
+	wireState, err := json.Marshal(map[string]string{"title": "wire chat", "workDir": workDir})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "state.json"), wireState, 0o644))
 
 	// Simulate a wire transcript: two user turns, some assistant/tool noise,
 	// punctuated by a non-append event that must be skipped.
@@ -368,6 +390,7 @@ func TestParseKimiSessionDir_WireJSONLMessageCount(t *testing.T) {
 func TestAgentGetSessionHistory_KimiCode2WireFormat(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	sessionID := "session_kimi-2-history"
 	sessionDir := filepath.Join(home, ".kimi-code", "sessions", "wd_project", sessionID)
@@ -419,6 +442,7 @@ func TestAgentGetSessionHistory_KimiCode2WireFormat(t *testing.T) {
 func TestAgentGetSessionHistory_SkipsInjectedUserMessages(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("KIMI_CODE_HOME", "")
 	sessionID := "injection-fixture"
 	dir := filepath.Join(home, ".kimi-code", "sessions", "project", sessionID)
@@ -443,6 +467,7 @@ func TestAgentGetSessionHistory_SkipsInjectedUserMessages(t *testing.T) {
 func TestAgentSessions_UsesRelocatedKimiCodeHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("KIMI_CODE_HOME", filepath.Join(home, "wrong-env-home"))
 	workDir := t.TempDir()
 	codeHome := filepath.Join(t.TempDir(), "code-home")
@@ -474,6 +499,7 @@ func TestAgentSessions_UsesRelocatedKimiCodeHome(t *testing.T) {
 func TestAgentGetSessionHistory_LegacyContextFormat(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	sessionID := "legacy-history"
 	sessionDir := filepath.Join(home, ".kimi", "sessions", "project", sessionID)
@@ -497,6 +523,7 @@ func TestAgentGetSessionHistory_LegacyContextFormat(t *testing.T) {
 func TestAgentGetSessionHistory_OlderWireMessageFormat(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	sessionID := "older-wire-history"
 	sessionDir := filepath.Join(home, ".kimi-code", "sessions", "project", sessionID)

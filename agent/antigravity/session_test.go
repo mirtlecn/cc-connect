@@ -2,6 +2,8 @@ package antigravity
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -228,20 +230,7 @@ func TestRespondPermissionRequiresDefaultMode(t *testing.T) {
 }
 
 func TestSendDoesNotHoldStdinOpen(t *testing.T) {
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-
-	workDir := t.TempDir()
-	cmdPath := filepath.Join(t.TempDir(), "fake-agy.sh")
-	script := "#!/bin/sh\ncat >/dev/null\nprintf 'done\\n'\n"
-	if err := os.WriteFile(cmdPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("WriteFile fake agy: %v", err)
-	}
-
-	s, err := newAntigravitySession(context.Background(), cmdPath, nil, workDir, "", "default", "", nil, 2*time.Second)
-	if err != nil {
-		t.Fatalf("newAntigravitySession: %v", err)
-	}
+	s := newAgyFixtureSession(t, "default", "", agyFixture{ReadStdin: true, Stdout: "done"})
 	defer func() { _ = s.Close() }()
 
 	if err := s.Send("hello", "", nil, nil); err != nil {
@@ -272,23 +261,16 @@ func TestSendDoesNotHoldStdinOpen(t *testing.T) {
 
 func TestAntigravitySession_ReportsHeadlessExitFailures(t *testing.T) {
 	for _, tt := range []struct {
-		name, script, want string
+		name, want string
+		fixture    agyFixture
 	}{
-		{"soft_denied_success", "printf 'headless mode cannot prompt; auto-denied' >&2; exit 0", "headless mode cannot prompt"},
-		{"empty_success", "exit 0", "without producing a response"},
-		{"failed_without_stderr", "exit 2", "exit status 2"},
-		{"failed_with_stderr", "printf 'tool execution failed' >&2; exit 2", "tool execution failed"},
+		{"soft_denied_success", "headless mode cannot prompt", agyFixture{Stderr: "headless mode cannot prompt; auto-denied"}},
+		{"empty_success", "without producing a response", agyFixture{}},
+		{"failed_without_stderr", "exit status 2", agyFixture{ExitCode: 2}},
+		{"failed_with_stderr", "tool execution failed", agyFixture{Stderr: "tool execution failed", ExitCode: 2}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			cmdPath := filepath.Join(t.TempDir(), "fake-agy.sh")
-			if err := os.WriteFile(cmdPath, []byte("#!/bin/sh\n"+tt.script+"\n"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			s, err := newAntigravitySession(context.Background(), cmdPath, nil, t.TempDir(), "", "yolo", "existing-session", nil, 2*time.Second)
-			if err != nil {
-				t.Fatal(err)
-			}
+			s := newAgyFixtureSession(t, "yolo", "existing-session", tt.fixture)
 			defer func() { _ = s.Close() }()
 			if err := s.Send("test", "", nil, nil); err != nil {
 				t.Fatal(err)
@@ -324,16 +306,7 @@ func TestAntigravitySession_StreamResponseDiagnostics(t *testing.T) {
 		{"plain_text", "answer", "answer\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			cmdPath := filepath.Join(t.TempDir(), "fake-agy.sh")
-			script := "#!/bin/sh\ncat <<'AGY_OUTPUT'\n" + tt.output + "\nAGY_OUTPUT\n"
-			if err := os.WriteFile(cmdPath, []byte(script), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			s, err := newAntigravitySession(context.Background(), cmdPath, nil, t.TempDir(), "", "yolo", "existing-session", nil, 2*time.Second)
-			if err != nil {
-				t.Fatal(err)
-			}
+			s := newAgyFixtureSession(t, "yolo", "existing-session", agyFixture{Stdout: tt.output})
 			defer func() { _ = s.Close() }()
 			if err := s.Send("test", "", nil, nil); err != nil {
 				t.Fatal(err)
@@ -365,6 +338,57 @@ func TestAntigravitySession_StreamResponseDiagnostics(t *testing.T) {
 			}
 		})
 	}
+}
+
+type agyFixture struct {
+	Stdout, Stderr string
+	ReadStdin      bool
+	ExitCode       int
+}
+
+func newAgyFixtureSession(t *testing.T, mode, resumeID string, fixture agyFixture) *antigravitySession {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := json.Marshal(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"-test.run=^TestAgyFixtureProcess$", "--"}
+	env := []string{"CC_CONNECT_TEST_AGY_FIXTURE=" + string(config)}
+	s, err := newAntigravitySession(context.Background(), bin, args, t.TempDir(), "", mode, resumeID, env, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestAgyFixtureProcess(t *testing.T) {
+	config := os.Getenv("CC_CONNECT_TEST_AGY_FIXTURE")
+	if config == "" {
+		return
+	}
+	var fixture agyFixture
+	if err := json.Unmarshal([]byte(config), &fixture); err != nil {
+		os.Exit(3)
+	}
+	if fixture.ReadStdin {
+		if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+			os.Exit(3)
+		}
+	}
+	if fixture.Stdout != "" {
+		fmt.Fprintln(os.Stdout, fixture.Stdout)
+	}
+	if fixture.Stderr != "" {
+		fmt.Fprint(os.Stderr, fixture.Stderr)
+	}
+	os.Exit(fixture.ExitCode)
 }
 
 func contains(xs []string, want string) bool {

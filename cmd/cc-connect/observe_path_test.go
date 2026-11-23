@@ -55,8 +55,7 @@ func TestEncodeClaudeProjectKey(t *testing.T) {
 func TestResolveClaudeProjectDir_HandlesUnderscoreWorkdir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	// macOS UserHomeDir falls back to $HOME when set, so this is enough on
-	// the platforms the test runs on (Linux/macOS).
+	t.Setenv("USERPROFILE", home)
 
 	workDir := "/Users/alice/my_project"
 	// Claude Code encodes the underscore as a hyphen.
@@ -74,6 +73,7 @@ func TestResolveClaudeProjectDir_HandlesUnderscoreWorkdir(t *testing.T) {
 func TestResolveClaudeProjectDir_HandlesSpaceWorkdir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	workDir := "/Users/x/Library/Mobile Documents/com~apple~CloudDocs/foo"
 	// Spaces and tildes are encoded as hyphens.
@@ -91,6 +91,7 @@ func TestResolveClaudeProjectDir_HandlesSpaceWorkdir(t *testing.T) {
 func TestResolveClaudeProjectDir_ReturnsEmptyWhenMissing(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	if got := resolveClaudeProjectDir("/no/such/workdir"); got != "" {
 		t.Fatalf("resolveClaudeProjectDir(missing) = %q, want empty", got)
@@ -100,10 +101,11 @@ func TestResolveClaudeProjectDir_ReturnsEmptyWhenMissing(t *testing.T) {
 func TestResolveClaudeProjectDir_FallsBackToLegacyEncoding(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// Older deployments may have on-disk project keys produced by the old
 	// "replace os.PathSeparator only" encoding; tilde was left intact.
-	workDir := "/Users/x/com~apple~CloudDocs/foo"
+	workDir := filepath.FromSlash("/Users/x/com~apple~CloudDocs/foo")
 	legacy := "-Users-x-com~apple~CloudDocs-foo"
 	want := filepath.Join(home, ".claude", "projects", legacy)
 	if err := os.MkdirAll(want, 0o755); err != nil {

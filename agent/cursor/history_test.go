@@ -18,6 +18,7 @@ func TestGetSessionHistory_LastMessagesAndUserQuery(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
 
 	workDir := filepath.Join(home, "project")
@@ -89,6 +90,7 @@ func TestGetSessionHistory_LastMessagesAndUserQuery(t *testing.T) {
 func TestGetSessionHistory_MissingSession(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
 
 	a := &Agent{workDir: filepath.Join(home, "project")}

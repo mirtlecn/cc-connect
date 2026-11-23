@@ -567,6 +567,7 @@ func TestValidateProjectDisplayConfig(t *testing.T) {
 func TestLoad_DefaultsDataDir(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 
 	cfgPath := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(cfgPath, []byte(baseConfigTOML), 0o644); err != nil {
@@ -616,6 +617,7 @@ func TestLoad_DataDirAbsoluteWhenExplicitlyRelative(t *testing.T) {
 func TestLoad_DataDirExpandsCurrentUserHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
 	body := "data_dir = \"~/.cc-connect\"\n" + baseConfigTOML
@@ -715,8 +717,8 @@ func TestLoad_ResolvesEnvPlaceholders(t *testing.T) {
 	if got := cfg.Webhook.Token; got != "hook-secret" {
 		t.Fatalf("Webhook.Token = %q, want hook-secret", got)
 	}
-	if got := stringMapValue(cfg.Projects[0].Agent.Options, "work_dir"); got != filepath.Join(root, "repo") {
-		t.Fatalf("work_dir = %q, want %q", got, filepath.Join(root, "repo"))
+	if got, want := stringMapValue(cfg.Projects[0].Agent.Options, "work_dir"), root+"/repo"; got != want {
+		t.Fatalf("work_dir = %q, want %q", got, want)
 	}
 	if got := stringMapValue(cfg.Projects[0].Agent.Options, "note"); got != "prefix-hook-secret-suffix" {
 		t.Fatalf("note = %q, want prefix-hook-secret-suffix", got)

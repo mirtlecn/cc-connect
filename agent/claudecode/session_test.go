@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -764,6 +765,9 @@ func TestWriteTempAppendPromptFile_UniquePerCall(t *testing.T) {
 // access path the spawned agent uses when it calls os.Open on the
 // file path passed via --append-system-prompt-file.
 func TestWriteTempAppendPromptFile_ReadableByOtherUser(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("run_as_user and POSIX file permissions are Unix-only")
+	}
 	dir := t.TempDir()
 	path, err := writeTempAppendPromptFile(dir, "session X")
 	if err != nil {
@@ -785,9 +789,11 @@ func TestWriteTempAppendPromptFile_ReadableByOtherUser(t *testing.T) {
 	// truly 0o000 file. We still assert it to make the regression
 	// observable on systems where the test runs as a non-root user
 	// (CI matrix, dev laptops).
-	if _, err := os.OpenFile(path, os.O_RDONLY, 0); err != nil {
+	file, err := os.OpenFile(path, os.O_RDONLY, 0)
+	if err != nil {
 		t.Fatalf("open O_RDONLY as a non-owner: %v — file is unreadable even for an unprivileged reader", err)
 	}
+	_ = file.Close()
 }
 
 func makeFiller(n int) string {
