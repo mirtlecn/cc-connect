@@ -23,6 +23,7 @@ const (
 type Config struct {
 	BinaryPath    string
 	WorkDir       string
+	ConfigPath    string // absolute path passed explicitly by the Windows task
 	HomeDir       string // captured HOME so subprocesses can resolve ~/… paths (issue: relative data_dir fallback)
 	LogFile       string
 	LogMaxSize    int64
@@ -92,8 +93,21 @@ type Meta struct {
 	LogMaxSize    int64  `json:"log_max_size"`
 	LogMaxBackups int    `json:"log_max_backups"`
 	WorkDir       string `json:"work_dir"`
+	ConfigPath    string `json:"config_path,omitempty"`
 	BinaryPath    string `json:"binary_path"`
 	InstalledAt   string `json:"installed_at"`
+}
+
+// InstanceConfigPath locates the lock file's companion config, including for
+// daemons installed before the exact path was recorded.
+func (m Meta) InstanceConfigPath() string {
+	if m.ConfigPath != "" {
+		return m.ConfigPath
+	}
+	if m.WorkDir != "" {
+		return filepath.Join(m.WorkDir, "config.toml")
+	}
+	return ""
 }
 
 func metaPath() string {
@@ -174,7 +188,11 @@ func Resolve(cfg *Config) error {
 	if len(cfg.EnvExtra) == 0 {
 		cfg.EnvExtra = captureDaemonEnv(cfg.NoCaptureSecrets)
 		if !cfg.NoCaptureSecrets {
-			captureConfigEnvPlaceholders(filepath.Join(cfg.WorkDir, "config.toml"), cfg.EnvExtra)
+			configPath := cfg.ConfigPath
+			if configPath == "" {
+				configPath = filepath.Join(cfg.WorkDir, "config.toml")
+			}
+			captureConfigEnvPlaceholders(configPath, cfg.EnvExtra)
 		}
 	}
 	return nil

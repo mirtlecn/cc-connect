@@ -3,17 +3,22 @@ package core
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 const messageTriggerShellTimeout = 60 * time.Second
 const messageTriggerShellOutputLimit = 16 * 1024
+const triggerPowerShellScriptEnv = "CC_CONNECT_TRIGGER_POWERSHELL_SCRIPT"
 
 type triggerShellOutput struct {
 	buffer    bytes.Buffer
@@ -90,7 +95,35 @@ func (e *Engine) runMessageTriggerShell(command, workDir string, msg *Message) (
 	if err != nil {
 		return "", err
 	}
-	cmd := shellExecCommand(ctx, e.shell, e.shellFlag, e.shellProfile, command)
+	flag, profile := e.shellFlag, e.shellProfile
+	base := triggerShellBase(e.shell)
+	windowsPowerShell := runtime.GOOS == "windows" && isTriggerPowerShell(base) && isTriggerPowerShellCommandFlag(flag)
+	nativePowerShellArgs := len(bindings) != 0 && supportsTriggerPowerShellParameters(base, flag)
+	if windowsPowerShell || nativePowerShellArgs {
+		if profile != "" {
+			profile += "\n"
+		}
+		if nativePowerShellArgs {
+			// Legacy native argument passing can discard empty values and split arguments containing quotes.
+			profile += `if ($PSVersionTable.PSVersion -lt [version]'7.3') { throw 'message trigger shell parameters require PowerShell 7.3 or later' }
+$PSNativeCommandArgumentPassing = 'Standard'
+`
+		}
+		command, profile = profile+command, ""
+		if windowsPowerShell {
+			// Parse the user script separately so using and param can still appear first.
+			// Keep -Command's exit status when a native command fails in that script.
+			bindings = append(bindings, triggerPowerShellScriptEnv+"="+command+"\nif (-not $?) { exit 1 }")
+			command = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n" +
+				". ([ScriptBlock]::Create($env:" + triggerPowerShellScriptEnv + "))"
+		} else {
+			command, flag = encodeTriggerPowerShellCommand(command), "-EncodedCommand"
+		}
+	}
+	cmd := shellExecCommand(ctx, e.shell, flag, profile, command)
+	if windowsPowerShell {
+		isolateTriggerShellConsole(cmd)
+	}
 	cmd.Dir = workDir
 	if runAsUser := e.runAsUser(); runAsUser != "" {
 		// sudo -i passes the script through the target user's login shell.
@@ -131,8 +164,8 @@ func bindMessageTriggerShell(command, shell, flag string, captures []string, mes
 	if !strings.Contains(command, "${message}") && (captures == nil || !strings.Contains(command, "$")) {
 		return command, nil, nil
 	}
-	base := strings.TrimSuffix(strings.ToLower(filepath.Base(shell)), ".exe")
-	powershell := strings.HasPrefix(base, "powershell") || strings.HasPrefix(base, "pwsh")
+	base := triggerShellBase(shell)
+	powershell := isTriggerPowerShell(base)
 	escape := byte('\\')
 	if powershell {
 		escape = '`'
@@ -213,6 +246,10 @@ func bindMessageTriggerShell(command, shell, flag string, captures []string, mes
 				script.WriteString(`"$` + name + `"`)
 			case flag == "-c" && isTriggerPOSIXShell(base):
 				script.WriteString(`"${` + name + `}"`)
+			case supportsTriggerPowerShellParameters(base, flag):
+				script.WriteString(`"$env:` + name + `"`)
+			case powershell:
+				return "", nil, fmt.Errorf("message trigger shell parameters require PowerShell 7.3 or later (pwsh with -Command)")
 			default:
 				return "", nil, fmt.Errorf("message trigger shell parameters are unsupported with shell %q and flag %q", base, flag)
 			}
@@ -225,7 +262,7 @@ func bindMessageTriggerShell(command, shell, flag string, captures []string, mes
 		if redirectTarget {
 			redirectTarget = false
 		} else if !commandSeen && !isTriggerShellAssignment(rawWord) && !isTriggerShellRedirectFD(rawWord, command[end:]) {
-			complexSyntax = complexSyntax || !isTriggerShellFixedCommand(rawWord)
+			complexSyntax = complexSyntax || !isTriggerShellFixedCommand(rawWord, powershell)
 			commandSeen = true
 		}
 		i = end
@@ -238,6 +275,31 @@ func bindMessageTriggerShell(command, shell, flag string, captures []string, mes
 	}
 	script.WriteString(command[previous:])
 	return script.String(), bindings, nil
+}
+
+func triggerShellBase(shell string) string {
+	return strings.TrimSuffix(strings.ToLower(filepath.Base(shell)), ".exe")
+}
+
+func isTriggerPowerShell(base string) bool {
+	return strings.HasPrefix(base, "powershell") || strings.HasPrefix(base, "pwsh")
+}
+
+func isTriggerPowerShellCommandFlag(flag string) bool {
+	return strings.EqualFold(flag, "-Command") || strings.EqualFold(flag, "-c")
+}
+
+func supportsTriggerPowerShellParameters(base, flag string) bool {
+	return strings.HasPrefix(base, "pwsh") && isTriggerPowerShellCommandFlag(flag)
+}
+
+func encodeTriggerPowerShellCommand(script string) string {
+	// -EncodedCommand accepts UTF-16LE and keeps the script out of Windows argv quoting.
+	encoded := make([]byte, 0, 2*len(script))
+	for _, unit := range utf16.Encode([]rune(script)) {
+		encoded = binary.LittleEndian.AppendUint16(encoded, unit)
+	}
+	return base64.StdEncoding.EncodeToString(encoded)
 }
 
 func isTriggerShellSeparator(c byte) bool {
@@ -287,9 +349,17 @@ func isTriggerShellRedirectFD(word, rest string) bool {
 	return len(rest) > 0 && (rest[0] == '<' || rest[0] == '>') && strings.Trim(word, "0123456789") == ""
 }
 
-func isTriggerShellFixedCommand(word string) bool {
+func isTriggerShellFixedCommand(word string, powershell bool) bool {
 	if len(word) >= 2 && (word[0] == '"' || word[0] == '\'') && word[len(word)-1] == word[0] {
 		word = word[1 : len(word)-1]
+	}
+	if powershell {
+		base := word[strings.LastIndexAny(word, `/\`)+1:]
+		switch strings.ToLower(base) {
+		case "iex", "invoke-expression":
+			return false
+		}
+		return word != "" && !strings.ContainsAny(word, "$`*?[]{}!~\"'")
 	}
 	switch word {
 	case "!", "if", "then", "elif", "else", "fi", "while", "until", "for", "do", "done", "case", "esac",

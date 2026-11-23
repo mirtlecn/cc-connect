@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1613,19 +1614,30 @@ func encodeClaudeProjectKey(absPath string) string {
 	return b.String()
 }
 
-// resolveConfigPath determines which config file to use.
-// Priority: explicit flag → ./config.toml → ~/.cc-connect/config.toml
 func resolveConfigPath(explicit string) string {
+	return resolveConfigPathFrom(explicit, "")
+}
+
+// resolveConfigPathFrom also supports discovery from a daemon's working directory.
+func resolveConfigPathFrom(explicit, workDir string) string {
 	if explicit != "" {
 		return explicit
 	}
-	if _, err := os.Stat("config.toml"); err == nil {
-		return "config.toml"
+	localConfig := filepath.Join(workDir, "config.toml")
+	if _, err := os.Stat(localConfig); err == nil {
+		return localConfig
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".cc-connect", "config.toml")
+		configDir := filepath.Join(home, ".cc-connect")
+		if runtime.GOOS == "windows" {
+			windowsConfig := filepath.Join(configDir, "config.windows.toml")
+			if info, err := os.Stat(windowsConfig); err == nil && !info.IsDir() {
+				return windowsConfig
+			}
+		}
+		return filepath.Join(configDir, "config.toml")
 	}
-	return "config.toml"
+	return localConfig
 }
 
 func bootstrapConfig(path string) error {
@@ -1694,7 +1706,8 @@ Usage:
   cc-connect <command> [args]
 
 Flags:
-  --config <path>    Path to config file (default: ./config.toml or ~/.cc-connect/config.toml)
+  --config <path>    Config file (default: ./config.toml, then ~/.cc-connect)
+                     Windows recognizes config.windows.toml in ~/.cc-connect
   --force            Kill any existing instance with the same config before starting
   --version          Print version and exit
   --help             Show this help message

@@ -219,6 +219,40 @@ access_token = "${CAPTURE_CONFIG_SKIP}"
 	}
 }
 
+func TestResolveCapturesSelectedConfigEnvPlaceholders(t *testing.T) {
+	workDir := t.TempDir()
+	configPath := filepath.Join(workDir, "config.windows.toml")
+	if err := os.WriteFile(configPath, []byte(`token = "${CAPTURE_SELECTED_CONFIG_TOKEN}"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CAPTURE_SELECTED_CONFIG_TOKEN", "test-token")
+	cfg := Config{BinaryPath: "/bin/true", WorkDir: workDir, ConfigPath: configPath}
+	if err := Resolve(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EnvExtra["CAPTURE_SELECTED_CONFIG_TOKEN"] != "test-token" {
+		t.Fatal("selected config placeholder was not captured")
+	}
+}
+
+func TestMetaInstanceConfigPathSupportsExistingMetadata(t *testing.T) {
+	workDir := t.TempDir()
+	t.Run("explicit", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "config.windows.toml")
+		meta := Meta{WorkDir: workDir, ConfigPath: configPath}
+		if got := meta.InstanceConfigPath(); got != configPath {
+			t.Fatalf("config path = %q, want %q", got, configPath)
+		}
+	})
+	t.Run("legacy", func(t *testing.T) {
+		meta := Meta{WorkDir: workDir}
+		configPath := filepath.Join(workDir, "config.toml")
+		if got := meta.InstanceConfigPath(); got != configPath {
+			t.Fatalf("config path = %q, want %q", got, configPath)
+		}
+	})
+}
+
 func TestResolveIgnoresCommentedConfigEnvPlaceholders(t *testing.T) {
 	workDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workDir, "config.toml"), []byte(`

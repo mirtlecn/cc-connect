@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -51,35 +52,10 @@ func daemonInstall(args []string) {
 		os.Exit(1)
 	}
 
-	// Fall back to the standard ~/.cc-connect location before resolving,
-	// so that daemon.Resolve's env capture (including ${ENV} placeholder
-	// scanning of the config file) and the installed service's
-	// WorkingDirectory are consistent with the config actually in use.
-	// This matches the lookup behavior of other subcommands (see main.go
-	// config resolution: ./config.toml first, then ~/.cc-connect/config.toml).
-	workDir := cfg.WorkDir
-	if workDir == "" {
-		if wd, gerr := os.Getwd(); gerr == nil {
-			workDir = wd
-		}
-	}
-	configPath := filepath.Join(workDir, "config.toml")
-	if _, err := os.Stat(configPath); err != nil {
-		if home, herr := os.UserHomeDir(); herr == nil {
-			homeConfig := filepath.Join(home, ".cc-connect", "config.toml")
-			if _, serr := os.Stat(homeConfig); serr == nil {
-				configPath = homeConfig
-				if cfg.WorkDir == "" {
-					cfg.WorkDir = filepath.Join(home, ".cc-connect")
-				}
-				fmt.Fprintf(os.Stderr, "Note: using config from %s\n", homeConfig)
-			}
-		}
-		if _, err := os.Stat(configPath); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: config.toml not found in %s\n", workDir)
-			fmt.Fprintf(os.Stderr, "  Use --work-dir to specify the config directory or --config to point to the config file\n")
-			os.Exit(1)
-		}
+	configPath, err := resolveDaemonInstallConfig(&cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	if err := daemon.Resolve(&cfg); err != nil {
@@ -94,9 +70,18 @@ func daemonInstall(args []string) {
 	}
 
 	st, _ := mgr.Status()
-	if st != nil && st.Installed && !force {
-		fmt.Fprintf(os.Stderr, "Service already installed. Use --force to reinstall.\n")
-		os.Exit(1)
+	if st != nil && st.Installed {
+		if !force {
+			fmt.Fprintf(os.Stderr, "Service already installed. Use --force to reinstall.\n")
+			os.Exit(1)
+		}
+		if runtime.GOOS == "windows" {
+			// The old task may have opened a different config's instance lock.
+			if err := stopService(mgr, reapLeftoverFromMeta); err != nil {
+				fmt.Fprintf(os.Stderr, "Stop before reinstall failed: %v\n", err)
+				os.Exit(1)
+			}
+		}
 	}
 
 	// Reap any process left over from a previous install before the new task is
@@ -118,6 +103,7 @@ func daemonInstall(args []string) {
 		LogFile:     cfg.LogFile,
 		LogMaxSize:  cfg.LogMaxSize,
 		WorkDir:     cfg.WorkDir,
+		ConfigPath:  cfg.ConfigPath,
 		BinaryPath:  cfg.BinaryPath,
 		InstalledAt: daemon.NowISO(),
 	}); err != nil {
@@ -150,6 +136,34 @@ func daemonInstall(args []string) {
 			fmt.Printf("     sudo loginctl enable-linger %s\n", user)
 		}
 	}
+}
+
+func resolveDaemonInstallConfig(cfg *daemon.Config) (string, error) {
+	// The systemd and launchd backends use config.toml in their working directory.
+	if runtime.GOOS != "windows" {
+		cfg.ConfigPath = ""
+	}
+	configPath, err := filepath.Abs(resolveConfigPathFrom(cfg.ConfigPath, cfg.WorkDir))
+	if err != nil {
+		return "", fmt.Errorf("resolve daemon config path: %w", err)
+	}
+	if info, err := os.Stat(configPath); err != nil {
+		return "", fmt.Errorf("read daemon config: %w", err)
+	} else if info.IsDir() {
+		return "", fmt.Errorf("daemon config path %q is a directory", configPath)
+	}
+	if cfg.WorkDir == "" {
+		cfg.WorkDir = filepath.Dir(configPath)
+	}
+	if runtime.GOOS == "windows" {
+		// Task Scheduler does not inherit the install command's working directory.
+		cfg.WorkDir, err = filepath.Abs(cfg.WorkDir)
+		if err != nil {
+			return "", fmt.Errorf("resolve daemon working directory: %w", err)
+		}
+		cfg.ConfigPath = configPath
+	}
+	return configPath, nil
 }
 
 func parseDaemonInstallArgs(args []string) (daemon.Config, bool, error) {
@@ -211,12 +225,12 @@ func parseDaemonInstallArgs(args []string) (daemon.Config, bool, error) {
 			if err != nil {
 				return daemon.Config{}, false, err
 			}
+			cfg.ConfigPath = value
 			cfg.WorkDir = filepath.Dir(value)
 			i = next
-		case strings.HasPrefix(arg, "--config="):
-			cfg.WorkDir = filepath.Dir(strings.TrimPrefix(arg, "--config="))
-		case strings.HasPrefix(arg, "-config="):
-			cfg.WorkDir = filepath.Dir(strings.TrimPrefix(arg, "-config="))
+		case strings.HasPrefix(arg, "--config="), strings.HasPrefix(arg, "-config="):
+			_, cfg.ConfigPath, _ = strings.Cut(arg, "=")
+			cfg.WorkDir = filepath.Dir(cfg.ConfigPath)
 		default:
 			return daemon.Config{}, false, fmt.Errorf("unknown flag: %s", arg)
 		}
@@ -314,10 +328,10 @@ func reapLeftover(configPath string) bool {
 // parse one.
 func reapLeftoverFromMeta() bool {
 	meta, err := daemon.LoadMeta()
-	if err != nil || meta.WorkDir == "" {
+	if err != nil {
 		return false
 	}
-	return reapLeftover(filepath.Join(meta.WorkDir, "config.toml"))
+	return reapLeftover(meta.InstanceConfigPath())
 }
 
 // stopService stops the service and then reaps. The reap has to come *after*
@@ -567,7 +581,8 @@ Commands:
   logs        View log output
 
 Install flags:
-  --config PATH         Path to config.toml (uses its parent as work dir)
+  --config PATH         Config path on Windows, or path to config.toml on Linux/macOS
+                        Its parent directory is used as the working directory by default
   --log-file PATH       Log file path (default: ~/.cc-connect/logs/cc-connect.log)
   --log-max-size N      Max log file size in MB (default: 10)
   --work-dir DIR        Directory containing config.toml (default: current dir)

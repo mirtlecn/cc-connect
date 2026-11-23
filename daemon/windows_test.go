@@ -22,6 +22,7 @@ func TestBuildWindowsTaskScript(t *testing.T) {
 	cfg := Config{
 		BinaryPath: `C:\Program Files\cc-connect\cc-connect.exe`,
 		WorkDir:    `C:\Users\me\.cc-connect`,
+		ConfigPath: `C:\Users\me\.cc-connect\O'Brien config.windows.toml`,
 		LogFile:    `C:\Users\me\.cc-connect\logs\cc-connect.log`,
 		LogMaxSize: 10 * 1024 * 1024,
 		EnvPATH:    `C:\Program Files\nodejs;C:\Users\me\AppData\Local\Programs`,
@@ -40,7 +41,7 @@ func TestBuildWindowsTaskScript(t *testing.T) {
 		`$env:http_proxy = 'http://127.0.0.1:7890'`,
 		`Set-Location -LiteralPath 'C:\Users\me\.cc-connect'`,
 		`while ($true) {`,
-		`& 'C:\Program Files\cc-connect\cc-connect.exe'`,
+		`& 'C:\Program Files\cc-connect\cc-connect.exe' --config 'C:\Users\me\.cc-connect\O''Brien config.windows.toml'`,
 		`if ($exitCode -eq 0) { exit 0 }`,
 		`Start-Sleep -Seconds 10`,
 	} {

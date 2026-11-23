@@ -1118,7 +1118,7 @@ type = "regex"
 value = '^帮我记录[：:]\r?\n([^\r\n]+)\r?\n([^\r\n]+)$'
 ```
 
-For an Agent action, set `prompt = "Task $1\nDeadline $2"`. For a Shell action, set `command = "add_todo $1 $2"`. To pass the full current message, set `command = "log_message ${message}"`. Write each Shell placeholder as a standalone argument without shell quotes. Its value becomes one argument, including when it contains spaces or line breaks. Shell variable arguments are supported in `sh`, `bash`, `zsh`, and `fish` with `run_as_user` unset or empty. Use static commands with PowerShell or `cmd.exe`.
+For an Agent action, set `prompt = "Task $1\nDeadline $2"`. For a Shell action, set `command = "add_todo $1 $2"`. To pass the full current message, set `command = "log_message ${message}"`. Write each Shell placeholder as a standalone argument without shell quotes. Its value becomes one argument, including when it contains spaces or line breaks. Shell variable arguments are supported in `sh`, `bash`, `zsh`, `fish`, and PowerShell 7.3 or later with `run_as_user` unset or empty. On Windows, set `shell = "pwsh.exe"` to use placeholders in PowerShell rules. Windows PowerShell (`powershell.exe`) and `cmd.exe` support static commands. PowerShell rules on Windows use UTF-8 for console output.
 
 ---
 
@@ -1229,6 +1229,8 @@ cc-connect daemon status
 cc-connect daemon logs [-f]
 cc-connect daemon uninstall
 ```
+
+On Windows, if there is no `config.toml` in the current directory, cc-connect checks `%USERPROFILE%\.cc-connect\config.windows.toml` before `config.toml` in the same directory. `cc-connect daemon install --config <path>` pins the scheduled task to the specified file.
 
 ---
 

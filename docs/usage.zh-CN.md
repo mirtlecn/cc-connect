@@ -1029,7 +1029,7 @@ type = "regex"
 value = '^帮我记录[：:]\r?\n([^\r\n]+)\r?\n([^\r\n]+)$'
 ```
 
-Agent 动作可填写 `prompt = "事项 $1\n截止时间 $2"`。Shell 动作可填写 `command = "add_todo $1 $2"`，要传完整正文时可填写 `command = "log_message ${message}"`。每个变量单独占一个参数，无需添加 Shell 引号。值含空格或换行时仍会作为一个参数传入。使用变量参数时，Shell 选 `sh`、`bash`、`zsh` 或 `fish`，`run_as_user` 留空或省略。PowerShell 和 `cmd.exe` 可执行静态命令。
+Agent 动作可填写 `prompt = "事项 $1\n截止时间 $2"`。Shell 动作可填写 `command = "add_todo $1 $2"`，要传完整正文时可填写 `command = "log_message ${message}"`。每个变量单独占一个参数，无需添加 Shell 引号。值含空格或换行时仍会作为一个参数传入。使用变量参数时，Shell 选 `sh`、`bash`、`zsh`、`fish` 或 PowerShell 7.3 及以上，`run_as_user` 留空或省略。在 Windows 上使用 PowerShell 规则变量时，设置 `shell = "pwsh.exe"`。Windows PowerShell（`powershell.exe`）和 `cmd.exe` 可执行静态命令。Windows 上的 PowerShell 规则使用 UTF-8 输出。
 
 ---
 
@@ -1140,6 +1140,8 @@ cc-connect daemon status
 cc-connect daemon logs [-f]
 cc-connect daemon uninstall
 ```
+
+在 Windows 上，当前目录没有 `config.toml` 时，cc-connect 会优先查找 `%USERPROFILE%\.cc-connect\config.windows.toml`，再查找同目录下的 `config.toml`。运行 `cc-connect daemon install --config <文件路径>` 时，计划任务会始终使用指定的文件。
 
 ---
 
