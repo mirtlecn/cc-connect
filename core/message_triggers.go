@@ -177,7 +177,21 @@ func (e *Engine) canMatchMessageTrigger(msg *Message) bool {
 		return false
 	}
 	text := strings.TrimSpace(event.Body)
-	return text != "" && !strings.HasPrefix(text, "/") && !strings.HasPrefix(text, "!") && e.matchBannedWord(text) == ""
+	return text != "" && !strings.HasPrefix(text, "!") && e.matchBannedWord(text) == ""
+}
+
+func (e *Engine) matchesMessageTrigger(rule MessageTriggerRule, p Platform, msg *Message, at time.Time) bool {
+	if !rule.watches(p.Name(), msg.Trigger) {
+		return false
+	}
+	if rule.PSFollowUp {
+		if _, ok := SplitPSFollowUp(msg.Trigger.Body); !ok || e.disabledCommandsForUser(msg.UserID)["ps"] {
+			return false
+		}
+	} else if strings.HasPrefix(strings.TrimSpace(msg.Trigger.Body), "/") {
+		return false
+	}
+	return rule.matchesGroups(msg.Trigger, at)
 }
 
 func (e *Engine) matchMessageTrigger(p Platform, msg *Message, at time.Time, evaluateIntent bool) (*MessageTriggerRule, bool) {
@@ -192,7 +206,7 @@ func (e *Engine) matchMessageTrigger(p Platform, msg *Message, at time.Time, eva
 	var input *triggerIntentInput
 	for i := len(state.rules) - 1; i >= 0; i-- {
 		rule := &state.rules[i]
-		if !rule.watches(p.Name(), event) || !rule.matchesGroups(event, at) {
+		if !e.matchesMessageTrigger(*rule, p, msg, at) {
 			continue
 		}
 		// Deduplicate before a model request and keep the same claim while checking
@@ -303,10 +317,9 @@ func (e *Engine) mayEvaluateMessageIntent(p Platform, msg *Message, at time.Time
 	if state == nil || !e.canMatchMessageTrigger(msg) {
 		return false
 	}
-	event := msg.Trigger
 	for i := len(state.rules) - 1; i >= 0; i-- {
 		rule := state.rules[i]
-		if rule.watches(p.Name(), event) && rule.matchesGroups(event, at) {
+		if e.matchesMessageTrigger(rule, p, msg, at) {
 			return rule.TriggerMode == "intent"
 		}
 	}

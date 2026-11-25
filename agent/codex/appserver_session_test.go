@@ -405,6 +405,34 @@ func TestAppServerSession_ResumeDoesNotRequestExtendedHistory(t *testing.T) {
 	}
 }
 
+func TestAppServerSession_SteerActiveTurnDoesNotStartAnotherTurn(t *testing.T) {
+	s, stdin := newSendTestSession(t, "turn-1")
+	if accepted, err := s.SteerActiveTurn("old-turn", "too late", "", nil, nil); accepted || err != nil {
+		t.Fatalf("stale turn: accepted = %v, err = %v", accepted, err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		accepted, err := s.SteerActiveTurn("turn-1", "follow-up", "", nil, nil)
+		if accepted {
+			err = fmt.Errorf("steering should have been declined")
+		}
+		done <- err
+	}()
+	req := waitForClientRequest(t, stdin)
+	if req.Method != "turn/steer" || req.Params["expectedTurnId"] != "turn-1" {
+		t.Fatalf("unexpected request: %+v", req)
+	}
+	s.handleResponse(rpcResponseEnvelope{ID: req.ID, Error: &rpcError{Code: -32600, Message: "no active turn to steer"}})
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the rejected steer")
+	}
+}
+
 func TestAppServerSession_SendSteersActiveTurn(t *testing.T) {
 	s, stdin := newSendTestSession(t, "turn-1", "buffered answer")
 	request, err := sendAndRespond(t, s, stdin, "focus on the requested fix", map[string]any{"turnId": "turn-1"})

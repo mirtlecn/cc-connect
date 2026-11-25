@@ -427,6 +427,7 @@ type Engine struct {
 	agentSessionIdleTimeoutNanos atomic.Int64
 	agentSessionIdleSeq          atomic.Uint64
 	maxQueuedMessages            int
+	queueBusyMessages            atomic.Bool
 	dirHistory                   *DirHistory
 	baseWorkDir                  string
 	projectState                 *ProjectStateStore
@@ -576,6 +577,7 @@ type interactiveState struct {
 	workspaceDir             string
 	agent                    Agent
 	mu                       sync.Mutex
+	steeringMu               sync.Mutex
 	stopCh                   chan struct{}
 	stopped                  bool
 	turnCancelled            bool // set when a graceful ACP CancelTurn aborted the live turn
@@ -619,6 +621,9 @@ type interactiveState struct {
 	// currentTurnUserMessageTimeMs is the UserMessageTimeMs for the in-flight
 	// foreground turn (including a queued turn after EventResult).
 	currentTurnUserMessageTimeMs int64
+	// An accepted supplement filters late arrivals without invalidating messages
+	// already admitted to the queue.
+	lastSteeredUserMessageTimeMs int64
 
 	// restartAfterTurn is set by /model when it arrives while a turn is in
 	// flight: instead of killing the running agent process (and losing its
@@ -634,10 +639,7 @@ func latestUserMessageWatermarkLocked(state *interactiveState) int64 {
 	if state == nil {
 		return 0
 	}
-	wm := state.lastCompletedUserMessageTimeMs
-	if state.currentTurnUserMessageTimeMs > wm {
-		wm = state.currentTurnUserMessageTimeMs
-	}
+	wm := max(state.lastCompletedUserMessageTimeMs, state.currentTurnUserMessageTimeMs, state.lastSteeredUserMessageTimeMs)
 	for _, q := range state.pendingMessages {
 		if q.userMessageTimeMs > wm {
 			wm = q.userMessageTimeMs
@@ -661,7 +663,7 @@ func userMessageWatermarkSnapshotLocked(state *interactiveState) userMessageWate
 	}
 	snap := userMessageWatermarkSnapshot{
 		completedMs: state.lastCompletedUserMessageTimeMs,
-		inFlightMs:  state.currentTurnUserMessageTimeMs,
+		inFlightMs:  max(state.currentTurnUserMessageTimeMs, state.lastSteeredUserMessageTimeMs),
 	}
 	for _, q := range state.pendingMessages {
 		if q.userMessageTimeMs > snap.queuedMaxMs {
@@ -3234,7 +3236,19 @@ func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *Messag
 		interactiveKey = resolvedWorkspace + ":" + msg.SessionKey
 	}
 
-	if trigger == nil || (!msg.Trigger.RuleOnly && !msg.triggerConfirmed) {
+	psFollowUp := trigger != nil && trigger.PSFollowUp
+	if psFollowUp {
+		content, _ = SplitPSFollowUp(msg.Trigger.Body)
+		msg.Content = prependMessageContext(msg.ExtraContent, content)
+	} else if trigger == nil && !e.queueBusyMessages.Load() && !e.disabledCommandsForUser(msg.UserID)["ps"] {
+		if text, ok := splitPSPrefix(content); ok {
+			psFollowUp = true
+			content = text
+			msg.Content = prependMessageContext(msg.ExtraContent, content)
+		}
+	}
+
+	if !psFollowUp && (trigger == nil || (!msg.Trigger.RuleOnly && !msg.triggerConfirmed)) {
 		if len(msg.Images) == 0 && strings.HasPrefix(content, "/") {
 			if e.handleCommand(p, msg, content) {
 				return
@@ -3391,9 +3405,11 @@ func (e *Engine) handleAcceptedMessage(p Platform, msg *Message, trigger *Messag
 				}
 			}
 		}
-		// ── end self-heal; queueing path below is unchanged ────────────────
-		// Session is busy — try to queue the message for the running turn
-		// so the agent processes it immediately after the current turn ends.
+		if (trigger == nil || psFollowUp) && psFollowUp == e.queueBusyMessages.Load() &&
+			e.maybeSteerBusyMessage(p, msg, interactiveKey, session, sessions) {
+			return
+		}
+		// Queue messages that could not be steered for the next turn.
 		if e.queueMessageForBusySession(p, msg, interactiveKey) {
 			// Race guard: the drain loop in processInteractiveMessageWith may
 			// have just finished (session unlocked) between our TryLock failure
@@ -7357,7 +7373,14 @@ func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
 	e.interactiveMu.Lock()
 	state, ok := e.interactiveStates[iKey]
 	e.interactiveMu.Unlock()
-	if !ok || state == nil || state.agentSession == nil || !state.agentSession.Alive() {
+	if !ok || state == nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsNoSession))
+		return
+	}
+	state.mu.Lock()
+	agentSession := state.agentSession
+	state.mu.Unlock()
+	if agentSession == nil || !agentSession.Alive() {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsNoSession))
 		return
 	}
@@ -7370,7 +7393,18 @@ func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsNoSession))
 		return
 	}
-	if err := state.agentSession.Send(text, "", nil, nil); err != nil {
+	var err error
+	if steerer, ok := agentSession.(TurnSteerer); ok {
+		var accepted bool
+		accepted, err = steerer.SteerActiveTurn(steerer.ActiveTurnID(), text, "", nil, nil)
+		if !accepted && err == nil {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsNoSession))
+			return
+		}
+	} else {
+		err = agentSession.Send(text, "", nil, nil)
+	}
+	if err != nil {
 		slog.Error("ps: send failed", "error", err)
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsSendFailed))
 		return
@@ -7467,17 +7501,7 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 
 	cmdID := matchPrefix(cmd, builtinCommands)
 
-	// Resolve effective disabled commands: role-based if available, else project-level
-	e.userRolesMu.RLock()
-	disabledCmds := e.disabledCmds
-	urm := e.userRoles
-	e.userRolesMu.RUnlock()
-	if urm != nil {
-		if role := urm.ResolveRole(msg.UserID); role != nil {
-			disabledCmds = role.DisabledCmds
-		}
-	}
-
+	disabledCmds := e.disabledCommandsForUser(msg.UserID)
 	if cmdID != "" && disabledCmds[cmdID] {
 		slog.Info("audit: command_blocked",
 			"user_id", msg.UserID, "platform", msg.Platform,

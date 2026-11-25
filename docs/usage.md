@@ -50,16 +50,18 @@ Each user gets an independent session with full conversation context. Manage ses
 | `/reasoning [level]` | View or switch reasoning effort (Codex) |
 | `/mode [name]` | View or switch permission mode |
 | `/stop` | Stop current execution |
-| `/ps <message>` / `/btw <message>` | Send a supplement to the running task |
+| `/ps <message>` / `/btw <message>` | Send a follow-up using the opposite of the configured default |
 | `/help` | Show available commands |
 
 During a session, the agent may request tool permissions. Reply **allow** / **deny** / **allow all**.
 
-Use `/ps` (or `/btw`) to add instructions while a task is running. An idle session rejects the command. The delivery confirmation means the bridge sent the request, not that the agent has finished processing it.
+While a task is running, `/ps` and `/btw` select the opposite behavior from `[queue].busy_message_mode`. The default `steer` inserts ordinary follow-ups into a supported active turn and queues messages sent with `/ps` or `/btw`. Set the mode to `queue` to queue ordinary follow-ups and explicitly steer with `/ps` or `/btw`. Apply changes with `/config reload` or a restart.
 
 With Pi, enable `rpc = true` for native steering: the supplement is queued for the next model call, after the current assistant turn's tool calls. If Pi has already finished while the bridge is still delivering its reply, the supplement starts a follow-up turn. Pi's default JSON mode keeps its existing one-shot sending behavior; it cannot inject into an already running process.
 
 Codex `/ps` steering requires an app-server that implements `turn/steer` (codex-cli 0.166.0 or newer). Older CLIs return a method-not-supported error; upgrade the Codex CLI to use this feature.
+
+Ordinary messages queue if the sender cannot use `/ps`, the backend lacks automatic steering, or the turn has already ended. A direct agent trigger with `ps_follow_up = true` can match messages such as `/ps check the tests` or `check the tests /ps` without a mention, subject to the rule's chat and sender conditions and delivery by the platform. The marker is removed before sending the message to the agent.
 
 cc-connect rotates to a fresh session automatically after long inactivity:
 

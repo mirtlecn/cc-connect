@@ -101,6 +101,29 @@ func TestTelegramMessageTriggers_NativeIdentityAndGroupRouting(t *testing.T) {
 	}
 }
 
+func TestTelegramMessageTriggers_PSGroupCommandAndSuffix(t *testing.T) {
+	for _, tc := range []struct {
+		text     string
+		entities []models.MessageEntity
+	}{
+		{"/ps check", []models.MessageEntity{{Type: models.MessageEntityTypeBotCommand, Length: 3}}},
+		{"check /ps", []models.MessageEntity{{Type: models.MessageEntityTypeBotCommand, Offset: 6, Length: 3}}},
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			p := &Platform{selfUser: &models.User{ID: 42, Username: "mybot"}}
+			p.SetMessageTriggerScope(nil, true, false)
+			var got *core.Message
+			p.handler = func(_ core.Platform, msg *core.Message) { got = msg }
+			msg := telegramTriggerTestMessage()
+			msg.Text, msg.Entities = tc.text, tc.entities
+			p.handleMessage(context.Background(), msg)
+			if got == nil || got.Trigger == nil || got.Trigger.Body != tc.text || !got.Trigger.BotMentionKnown {
+				t.Fatalf("command did not reach the configured rules: %#v", got)
+			}
+		})
+	}
+}
+
 func TestTelegramMessageTriggers_BodyBeforeLinkAndReplyEnrichment(t *testing.T) {
 	var got *core.Message
 	p := &Platform{selfUser: &models.User{ID: 42, Username: "mybot"}}

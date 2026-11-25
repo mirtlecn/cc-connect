@@ -77,6 +77,12 @@
 [log]
 level = "info" # debug, info, warn, error
 
+# Ordinary messages received during an active turn / Agent 忙碌时收到的普通消息
+# [queue]
+# busy_message_mode = "steer"  # "steer" (default) inserts into supported active turns; "queue" waits for the next turn
+# max_depth = 5                 # maximum queued messages per session / 每个会话最多排队的消息数
+# /ps and /btw select the opposite behavior / /ps 和 /btw 使用与默认值相反的方式
+
 # =============================================================================
 # Intent Matching for Message Triggers / 消息触发任务的意图判断
 # =============================================================================
@@ -1120,6 +1126,7 @@ mode = "default" # "default" | "acceptEdits" (edit) | "plan" | "auto" | "bypassP
 # trigger_mode = "direct"         # direct | manual | intent / 直接执行、人工确认、意图判断
 # intent_prompt = ""              # Required in intent mode / 意图判断模式必填
 # action = "agent"                 # agent | shell
+# ps_follow_up = true              # Optional, direct agent only. Match /ps or /btw at either edge and strip it before sending.
 # prompt = "Summarize the incident and ask for missing details." # Agent action only / 仅用于 Agent
 # cc_enabled = false               # Final reply only / 仅用于最终回复
 # cc_user_ids = ["ou_cc_example"]  # Feishu/Lark OpenIDs, Telegram positive numeric user IDs / 飞书或 Lark OpenID、Telegram 正整数用户 ID

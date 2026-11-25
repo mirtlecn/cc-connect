@@ -22,6 +22,7 @@ export interface MessageTriggerRule {
   group_match: MessageTriggerMatch;
   groups: MessageTriggerGroup[];
   action: 'agent' | 'shell';
+  ps_follow_up?: boolean;
   trigger_mode: MessageTriggerMode;
   intent_prompt?: string;
   cc_enabled?: boolean;

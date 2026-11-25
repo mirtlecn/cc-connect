@@ -431,6 +431,14 @@ type AgentSession interface {
 	Close() error
 }
 
+// TurnSteerer appends input to a specific in-flight turn. ActiveTurnID returns
+// an empty string when steering is unavailable. SteerActiveTurn returns false
+// with no error only when the input can safely be sent later as a new turn.
+type TurnSteerer interface {
+	ActiveTurnID() string
+	SteerActiveTurn(turnID, prompt, messageID string, images []ImageAttachment, files []FileAttachment) (bool, error)
+}
+
 // PermissionResult represents the user's decision on a permission request.
 type PermissionResult struct {
 	Behavior     string         `json:"behavior"`               // "allow" or "deny"

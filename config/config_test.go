@@ -11,6 +11,29 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+func TestBusyMessageModeConfig(t *testing.T) {
+	for _, tt := range []struct{ input, want string }{
+		{"", ""}, {"steer", "steer"}, {" QUEUE ", "queue"}, {"invalid", ""},
+	} {
+		t.Run(tt.input, func(t *testing.T) {
+			cfg := Config{Projects: []ProjectConfig{validProject("demo")}}
+			if _, err := toml.Decode(fmt.Sprintf("[queue]\nbusy_message_mode = %q\n", tt.input), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			err := cfg.validate()
+			if tt.input == "invalid" {
+				if err == nil || !strings.Contains(err.Error(), "queue.busy_message_mode") {
+					t.Fatalf("validate() = %v, want busy_message_mode validation error", err)
+				}
+				return
+			}
+			if err != nil || cfg.Queue.BusyMessageMode != tt.want {
+				t.Fatalf("busy_message_mode = %q, validate() = %v; want %q", cfg.Queue.BusyMessageMode, err, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	tests := []struct {
 		name    string

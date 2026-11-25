@@ -159,7 +159,8 @@ type CronConfig struct {
 
 // QueueConfig controls the per-session message queue.
 type QueueConfig struct {
-	MaxDepth *int `toml:"max_depth"` // max queued messages per session; default 5
+	MaxDepth        *int   `toml:"max_depth"`                   // max queued messages per session; default 5
+	BusyMessageMode string `toml:"busy_message_mode,omitempty"` // "steer" (default) or "queue"
 }
 
 // WebhookConfig controls the external HTTP webhook endpoint.
@@ -1101,6 +1102,12 @@ func (c *Config) validateInternal(permissive bool) error {
 	case "", "on", "off":
 	default:
 		return fmt.Errorf("config: attachment_send must be \"on\" or \"off\"")
+	}
+	c.Queue.BusyMessageMode = strings.ToLower(strings.TrimSpace(c.Queue.BusyMessageMode))
+	switch c.Queue.BusyMessageMode {
+	case "", "steer", "queue":
+	default:
+		return fmt.Errorf("config: queue.busy_message_mode must be \"steer\" or \"queue\"")
 	}
 	if c.Relay.TimeoutSecs != nil && *c.Relay.TimeoutSecs < 0 {
 		return fmt.Errorf("config: relay.timeout_secs must be >= 0")

@@ -705,7 +705,7 @@ func main() {
 			engine.SetStopHookEvent(core.HookEventType(strings.ToLower(v)))
 		}
 
-		// Wire queue depth
+		engine.SetBusyMessageMode(cfg.Queue.BusyMessageMode)
 		if cfg.Queue.MaxDepth != nil && *cfg.Queue.MaxDepth > 0 {
 			engine.SetMaxQueuedMessages(*cfg.Queue.MaxDepth)
 		}
@@ -1839,6 +1839,7 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 	}); err != nil {
 		return nil, fmt.Errorf("reload message triggers: %w", err)
 	}
+	engine.SetBusyMessageMode(cfg.Queue.BusyMessageMode)
 
 	// Reload display config (includes legacy quiet → display mapping)
 	mode, tm, tool, tmlen, toollen, showCtx, showFooter, hideAgentFooter := config.EffectiveDisplay(cfg, proj)

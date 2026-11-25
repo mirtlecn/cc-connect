@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -34,6 +35,8 @@ type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }
+
+func (e *rpcError) Error() string { return strings.TrimSpace(e.Message) }
 
 type initResponse struct {
 	ProtocolVersion string `json:"protocolVersion"`
@@ -537,12 +540,7 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 		return fmt.Errorf("session is closed")
 	}
 
-	if len(files) > 0 {
-		filePaths := core.SaveFilesToDisk(s.workDir, messageID, files)
-		prompt = core.AppendFileRefs(prompt, filePaths)
-	}
-
-	prompt, imagePaths, err := s.stageImages(prompt, images)
+	prompt, imagePaths, err := s.stageTurnInput(prompt, messageID, images, files)
 	if err != nil {
 		return err
 	}
@@ -561,6 +559,21 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 		return fmt.Errorf("codex app-server thread id is empty")
 	}
 
+	input := appServerTurnInput(prompt, imagePaths)
+	if activeTurn != "" {
+		return s.steerTurn(threadID, activeTurn, input)
+	}
+	return s.startTurn(threadID, input, turnRevision)
+}
+
+func (s *appServerSession) stageTurnInput(prompt, messageID string, images []core.ImageAttachment, files []core.FileAttachment) (string, []string, error) {
+	if len(files) > 0 {
+		prompt = core.AppendFileRefs(prompt, core.SaveFilesToDisk(s.workDir, messageID, files))
+	}
+	return s.stageImages(prompt, images)
+}
+
+func appServerTurnInput(prompt string, imagePaths []string) []map[string]any {
 	input := make([]map[string]any, 0, 1+len(imagePaths))
 	input = append(input, map[string]any{
 		"type":          "text",
@@ -574,10 +587,7 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 		})
 	}
 
-	if activeTurn != "" {
-		return s.steerTurn(threadID, activeTurn, input)
-	}
-	return s.startTurn(threadID, input, turnRevision)
+	return input
 }
 
 func (s *appServerSession) startTurn(threadID string, input []map[string]any, turnRevision uint64) error {
@@ -621,6 +631,55 @@ func (s *appServerSession) startTurn(threadID string, input []map[string]any, tu
 }
 
 func (s *appServerSession) steerTurn(threadID, expectedTurnID string, input []map[string]any) error {
+	turnID, err := s.requestTurnSteer(threadID, expectedTurnID, input)
+	if err != nil {
+		s.stateMu.Lock()
+		if s.currentTurn == expectedTurnID {
+			// Retire a stale ID so the next normal Send can start a turn.
+			s.currentTurn = ""
+			s.turnRevision++
+		}
+		s.stateMu.Unlock()
+		return err
+	}
+	return validateSteeredTurnID(turnID, expectedTurnID)
+}
+
+func (s *appServerSession) ActiveTurnID() string {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if !s.alive.Load() {
+		return ""
+	}
+	return s.currentTurn
+}
+
+// SteerActiveTurn never starts a new turn. Even if the turn changes while
+// attachments are staged, the server only accepts the requested turn ID.
+func (s *appServerSession) SteerActiveTurn(turnID, prompt, messageID string, images []core.ImageAttachment, files []core.FileAttachment) (bool, error) {
+	if turnID == "" || s.ActiveTurnID() != turnID {
+		return false, nil
+	}
+	prompt, imagePaths, err := s.stageTurnInput(prompt, messageID, images, files)
+	if err != nil {
+		return false, err
+	}
+	acceptedTurnID, err := s.requestTurnSteer(s.CurrentSessionID(), turnID, appServerTurnInput(prompt, imagePaths))
+	if err != nil {
+		var rpcErr *rpcError
+		if errors.As(err, &rpcErr) {
+			switch rpcErr.Code {
+			case -32601, -32600, -32602: // Method unavailable, or server rejected the request before delivery.
+				return false, nil
+			}
+		}
+		return false, err
+	}
+	err = validateSteeredTurnID(acceptedTurnID, turnID)
+	return err == nil, err
+}
+
+func (s *appServerSession) requestTurnSteer(threadID, expectedTurnID string, input []map[string]any) (string, error) {
 	params := map[string]any{
 		"threadId":       threadID,
 		"expectedTurnId": expectedTurnID,
@@ -629,22 +688,17 @@ func (s *appServerSession) steerTurn(threadID, expectedTurnID string, input []ma
 
 	var resp turnSteerResponse
 	if err := s.request("turn/steer", params, &resp); err != nil {
-		s.stateMu.Lock()
-		if s.currentTurn == expectedTurnID {
-			// A turn can finish before its delayed turn/start response is
-			// installed. Do not strand every later message on a stale ID;
-			// the next user message gets a normal turn/start instead.
-			s.currentTurn = ""
-			s.turnRevision++
-		}
-		s.stateMu.Unlock()
-		return fmt.Errorf("codex app-server turn/steer: %w", err)
+		return "", fmt.Errorf("codex app-server turn/steer: %w", err)
 	}
-	if resp.TurnID == "" {
+	return resp.TurnID, nil
+}
+
+func validateSteeredTurnID(turnID, expectedTurnID string) error {
+	if turnID == "" {
 		return fmt.Errorf("codex app-server turn/steer returned empty turn id")
 	}
-	if resp.TurnID != expectedTurnID {
-		return fmt.Errorf("codex app-server turn/steer returned turn id %q, want %q", resp.TurnID, expectedTurnID)
+	if turnID != expectedTurnID {
+		return fmt.Errorf("codex app-server turn/steer returned turn id %q, want %q", turnID, expectedTurnID)
 	}
 	return nil
 }
@@ -1872,7 +1926,7 @@ func (s *appServerSession) requestWithTimeout(method string, params any, out any
 	select {
 	case resp := <-ch:
 		if resp.Error != nil {
-			return fmt.Errorf("%s", strings.TrimSpace(resp.Error.Message))
+			return resp.Error
 		}
 		if out != nil {
 			if err := json.Unmarshal(resp.Result, out); err != nil {

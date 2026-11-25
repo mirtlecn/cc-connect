@@ -83,6 +83,7 @@ export default function MessageTriggerEditor({ rule, platforms, saving, conflict
       group_match: draft.groupMatch,
       groups,
       action: draft.action,
+      ps_follow_up: rule?.ps_follow_up,
       trigger_mode: draft.triggerMode,
       intent_prompt: draft.triggerMode === 'intent' ? intentPrompt : undefined,
       cc_enabled: ccEnabled,

@@ -97,6 +97,7 @@ func TestCUJ_A9_PsAndBtwSupplementRunningTask(t *testing.T) {
 			p := &stubPlatformEngine{n: "test"}
 			s := &psSupplementSession{started: make(chan struct{}), events: make(chan Event, 1)}
 			e := NewEngine("test", &resultAgent{session: s}, []Platform{p}, "", LangEnglish)
+			e.SetBusyMessageMode("queue")
 			t.Cleanup(func() {
 				if err := e.Stop(); err != nil {
 					t.Error(err)
@@ -142,6 +143,145 @@ func TestCUJ_A9_PsAndBtwSupplementRunningTask(t *testing.T) {
 			// User action 3: an idle session must reject another supplement.
 			send(command + " another instruction")
 			waitFor(e.i18n.T(MsgPsNoSession), true)
+		})
+	}
+}
+
+type busyFollowUpSession struct {
+	*queuingAgentSession
+	steerAccepted bool
+	steerError    error
+}
+
+func (s *busyFollowUpSession) ActiveTurnID() string { return "held-turn" }
+
+func (s *busyFollowUpSession) SteerActiveTurn(turnID, prompt, _ string, _ []ImageAttachment, _ []FileAttachment) (bool, error) {
+	if turnID != "held-turn" {
+		return false, fmt.Errorf("unexpected turn %q", turnID)
+	}
+	if s.steerAccepted {
+		s.events <- Event{Type: EventResult, Content: "supplement used: " + prompt, Done: true}
+	}
+	return s.steerAccepted, s.steerError
+}
+
+func TestCUJ_A10_BusyMessageSteeringAndQueue(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		mode          string
+		psDisabled    bool
+		steerAccepted bool
+		steerError    error
+		followUp      string
+		want          MsgKey
+	}{
+		{name: "default inserts", steerAccepted: true, want: MsgPsSent},
+		{name: "ps queues in steer mode", steerAccepted: true, followUp: "/ps ", want: MsgMessageQueued},
+		{name: "btw queues in steer mode", steerAccepted: true, followUp: "/btw ", want: MsgMessageQueued},
+		{name: "queue setting", mode: "queue", steerAccepted: true, want: MsgMessageQueued},
+		{name: "ps disabled", psDisabled: true, steerAccepted: true, want: MsgMessageQueued},
+		{name: "turn rejects steering", want: MsgMessageQueued},
+		{name: "delivery cannot be confirmed", steerError: errors.New("connection interrupted"), want: MsgPsSendFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &stubPlatformEngine{n: "test"}
+			s := &busyFollowUpSession{newQueuingSession("busy-follow-up"), tc.steerAccepted, tc.steerError}
+			e := NewEngine("test", &resultAgent{session: s}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+			t.Cleanup(func() { _ = e.Stop() })
+			if tc.mode != "" {
+				e.SetBusyMessageMode(tc.mode)
+			}
+			if tc.psDisabled {
+				e.SetDisabledCommands([]string{"ps"})
+			}
+			env := &cujEnv{t: t, plat: p}
+			var timeMs int64
+			send := func(text string) {
+				timeMs += 1000
+				e.ReceiveMessage(p, &Message{SessionKey: "test:user", Platform: p.Name(), UserID: "user", Content: text,
+					MessageID: fmt.Sprint(timeMs), UserMessageTimeMs: timeMs, ReplyCtx: "ctx"})
+			}
+			waitFor := func(text string) {
+				t.Helper()
+				env.waitFor(text, 2*time.Second, func() bool { return env.sentContains(text) })
+			}
+
+			send("first task")
+			waitForQueuedSends(t, s.queuingAgentSession, 1)
+			send(tc.followUp + "follow-up instruction")
+			waitFor(e.i18n.T(tc.want))
+
+			switch tc.want {
+			case MsgPsSent:
+				waitFor("supplement used: follow-up instruction")
+			case MsgMessageQueued:
+				if env.sentContains("supplement used:") {
+					t.Fatal("follow-up was inserted despite the queue acknowledgement")
+				}
+				s.events <- Event{Type: EventResult, Content: "first answer", Done: true}
+				waitFor("first answer")
+				waitForQueuedSends(t, s.queuingAgentSession, 2)
+				s.events <- Event{Type: EventResult, Content: "queued answer", Done: true}
+				waitFor("queued answer")
+			case MsgPsSendFailed:
+				s.events <- Event{Type: EventResult, Content: "first answer", Done: true}
+				waitFor("first answer")
+			}
+
+			waitForSessionIdle(t, e.sessions.GetOrCreateActive("test:user"))
+			send("/history")
+			waitFor("History (last")
+			if got := strings.Contains(env.lastSent(), "follow-up instruction"); got != (tc.want != MsgPsSendFailed) {
+				t.Fatalf("history follow-up present = %v; history: %q", got, env.lastSent())
+			}
+			if tc.followUp != "" && strings.Contains(env.lastSent(), tc.followUp) {
+				t.Fatalf("history still contains the command marker: %q", env.lastSent())
+			}
+		})
+	}
+}
+
+func TestCUJ_A11_PSMarkersTriggerGroupAgent(t *testing.T) {
+	for _, mode := range []string{"steer", "queue"} {
+		t.Run(mode, func(t *testing.T) {
+			p := newMessageTriggerTestPlatform()
+			s := &busyFollowUpSession{queuingAgentSession: newQueuingSession("group-follow-up"), steerAccepted: true}
+			e := NewEngine("test", &resultAgent{session: s}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+			t.Cleanup(func() { _ = e.Stop() })
+			e.SetBusyMessageMode(mode)
+			e.SetMessageTriggers([]MessageTriggerRule{{
+				Name: "group follow-ups", Enabled: true, Platform: p.Name(), Action: "agent", PSFollowUp: true,
+				Groups: []MessageTriggerGroup{{Conditions: []MessageTriggerCondition{
+					{Type: "chat_scope", Value: "group"}, {Type: "sender", Values: []string{"sender"}},
+				}}},
+			}}, MessageTriggerModel{})
+			env := &cujEnv{t: t, plat: p.stubPlatformEngine}
+			waitFor := func(text string) {
+				t.Helper()
+				env.waitFor(text, 2*time.Second, func() bool { return env.sentContains(text) })
+			}
+			other := messageTriggerTestMessage(p, "other", "/ps unauthorized", false)
+			other.UserID, other.Trigger.SenderIDs = "other", []string{"other"}
+			e.ReceiveMessage(p, other)
+			e.ReceiveMessage(p, messageTriggerTestMessage(p, "first", "/ps first task", false))
+			waitForQueuedSends(t, s.queuingAgentSession, 1)
+			e.ReceiveMessage(p, messageTriggerTestMessage(p, "second", "follow-up instruction　/ps", false))
+			if mode == "steer" {
+				waitFor(e.i18n.T(MsgMessageQueued))
+				s.events <- Event{Type: EventResult, Content: "first answer", Done: true}
+				waitFor("source:first -> first answer")
+				waitForQueuedSends(t, s.queuingAgentSession, 2)
+				s.events <- Event{Type: EventResult, Content: "follow-up answer", Done: true}
+				waitFor("source:second -> follow-up answer")
+			} else {
+				waitFor(e.i18n.T(MsgPsSent))
+				waitFor("source:first -> supplement used: follow-up instruction")
+			}
+			s.sendMu.Lock()
+			defer s.sendMu.Unlock()
+			if got := s.sendCalls[0]; got != "first task" || (mode == "steer" && s.sendCalls[1] != "follow-up instruction") {
+				t.Fatalf("unexpected agent prompts: %q", s.sendCalls)
+			}
 		})
 	}
 }

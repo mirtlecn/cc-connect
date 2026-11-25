@@ -217,6 +217,7 @@ func TestPiRPCPs_AfterRemoteTurnEnds(t *testing.T) {
 	// No persistent store: this test concerns transport and routing, not disk writes.
 	agent := newRPCSteeringAgent(t)
 	engine := core.NewEngine("rpc-steering-test", agent, []core.Platform{p}, "", core.LangEnglish)
+	engine.SetBusyMessageMode("queue")
 	engine.SetStreamPreviewCfg(core.StreamPreviewCfg{Enabled: false})
 	engine.SetShowContextIndicator(false)
 	engine.SetShowWorkdirIndicator(false)

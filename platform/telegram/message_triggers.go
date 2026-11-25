@@ -47,7 +47,9 @@ func (p *Platform) SetMessageTriggerScope(groups []string, allGroups, privateCha
 }
 
 func (p *Platform) triggerEvent(msg *models.Message) *core.MessageTriggerEvent {
-	if msg.Chat.ID == 0 || msg.From.ID <= 0 || msg.From.IsBot || isCommand(msg) ||
+	text, _ := messageTextAndEntities(msg)
+	_, psFollowUp := core.SplitPSFollowUp(text)
+	if msg.Chat.ID == 0 || msg.From.ID <= 0 || msg.From.IsBot || (isCommand(msg) && !psFollowUp) ||
 		(msg.Text == "" && (msg.Caption == "" || (len(msg.Photo) == 0 && msg.Document == nil))) {
 		return nil
 	}
@@ -71,7 +73,7 @@ func (p *Platform) triggerEvent(msg *models.Message) *core.MessageTriggerEvent {
 	directMention := telegramMentionsBot(ids, self)
 	if directMention {
 		body = strings.TrimSpace(renderMessageText(body, entities, self, false))
-	} else if !privateChat && telegramReplyToBot(msg, self) {
+	} else if !privateChat && telegramReplyToBot(msg, self) && !psFollowUp {
 		return nil
 	}
 	return &core.MessageTriggerEvent{

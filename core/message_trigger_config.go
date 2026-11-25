@@ -21,6 +21,7 @@ type MessageTriggerRule struct {
 	GroupMatch   string                `json:"group_match" toml:"group_match"`
 	Groups       []MessageTriggerGroup `json:"groups" toml:"groups"`
 	Action       string                `json:"action" toml:"action"`
+	PSFollowUp   bool                  `json:"ps_follow_up,omitempty" toml:"ps_follow_up,omitempty"`
 	TriggerMode  string                `json:"trigger_mode" toml:"trigger_mode"`
 	IntentPrompt string                `json:"intent_prompt,omitempty" toml:"intent_prompt,omitempty"`
 	CCEnabled    bool                  `json:"cc_enabled,omitempty" toml:"cc_enabled,omitempty"`
@@ -373,6 +374,8 @@ func (r MessageTriggerRule) validate(platforms []string, model MessageTriggerMod
 		return fmt.Errorf("at least one condition group is required")
 	case r.Action != "agent" && r.Action != "shell":
 		return fmt.Errorf("action must be agent or shell")
+	case r.PSFollowUp && (r.Action != "agent" || r.TriggerMode != "direct" || r.Prompt != ""):
+		return fmt.Errorf("ps_follow_up requires a direct agent action without a prompt")
 	case r.Action == "shell" && r.Command == "":
 		return fmt.Errorf("command is required for shell actions")
 	case r.Action == "agent" && r.Command != "":
